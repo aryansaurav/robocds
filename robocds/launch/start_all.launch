@@ -1,0 +1,43 @@
+<launch>
+
+
+<!-- EPFL ALLEGRO HAND RIGHT TORQUE CONTROL -->
+  <include file="$(find epfl_allegro_launchers)/launch/epfl_right.launch">
+  	    <arg name="CONTROLLER" value="torque"/>
+  	      <arg name="VISUALIZE" default="false" />
+  	        <arg name="KEYBOARD" default="false" />
+
+
+  </include>
+
+<!-- Nicholas Package for shared control of allegro hand -->
+  <include file="$(find robot_haptic_controller)/launch/hand_demo_full.launch"/>
+
+<!-- Mocap optitrack for receiving pose and orientation of hand -->
+  <include file="$(find mocap_optitrack)/launch/epfl_optitrack.launch"/>
+
+<!-- Gaze Tracking -->
+<!-- TO BE INTEGRATED -->
+
+<!-- target receiver from the gaze tracking -->
+  <node pkg="robot_arm_motion" type="target_locator" name="target_locator"/>
+
+
+<!-- Win bridge bridge_server for receiving grasp type messages -->
+<!-- TO BE INTEGRATED -->
+
+
+<!-- EMG Simulator to receive grasp type -->
+  <node pkg="EMGinterface" type="emgSimulator" name="EMG_Simulator"/>
+
+<!-- my program -->
+  <node pkg="robocds" type="robocdsv2" name="robocds" output="screen"/>
+
+<!-- rqt graph -->
+  <node pkg="rqt_graph" type="rqt_graph" name="rqt_graph"/>
+
+
+
+
+
+</launch>
