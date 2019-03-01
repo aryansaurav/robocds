@@ -10,8 +10,20 @@
 #include "sensor_msgs/JointState.h"
 #include <dynamic_reconfigure/server.h>
 #include "geometry_msgs/PointStamped.h"
+#include "std_msgs/Float32MultiArray.h"
 
 //#include "CDDynamics.h"
+
+
+
+
+/*-- Variables related to TekScan pressure sensors --*/
+
+    float pressure_threshold = 0.5 ;            //pressure threshold for contact to be counted <dyn_recnfg>
+    int minContact = 3;                         //Minimum no. of contacts for acknowledging grasp of object <dyn_recnfg>
+    int nbContact = 0;                          //Current no. of contacts
+    int nb_tactile_input = 23;                  //from robot_haptic_controller package
+
 
 /*-- Booleans --*/
 
@@ -20,6 +32,7 @@
 	bool _firstObjectPoseReceived=false;
 	bool _firstTargetPoseReceived=false;
 	bool _firstRealPoseReceived=false;
+    bool _graspfinished = false;
 
 /*-- Variables related to the mocap system --*/
 
@@ -28,11 +41,11 @@ double lookBack=0.1;                                             // the timewind
 double velThreshold=0.018;                                       // velocity threshold for destinguish the motion or no=motion of the hand
 int mocapRate=200;                                               // the sample rate of the motion capture system
 
-std::vector<double> mocapPosition(3,0);                          // vector for the position of the hand
-std::vector<double> mocapVelocity(3,0);                          // vector for the velocity of the hand
+std::vector<double> handPosition(3,0);                          // vector for the position of the hand
+std::vector<double> handVelocity(3,0);                          // vector for the velocity of the hand
 
-std::vector< std::vector<double> > mocapHistoryPosition(3);      // vector for the position of the marker on hand
-std::vector< std::vector<double> > mocapHistoryVelocity(3);      // vector for velocity of the marker on hand
+std::vector< std::vector<double> > handHistoryPosition(3);      // vector for the position of the marker on hand
+std::vector< std::vector<double> > handHistoryVelocity(3);      // vector for velocity of the marker on hand
 std::vector<double> velocityNormHistory;                         // vector for the norm of the velocity of the hand
 
 std::vector<double> mocapTime;                                   // timestamp for the mocap system
@@ -269,9 +282,9 @@ void handListener(const geometry_msgs::PoseStamped& mocapmsg){
 
     /*-- Callback function for subscriber of the mocap system --*/
 
-    mocapPosition[0]=mocapmsg.pose.position.x;
-    mocapPosition[1]=mocapmsg.pose.position.y;
-    mocapPosition[2]=mocapmsg.pose.position.z;
+    handPosition[0]=mocapmsg.pose.position.x;
+    handPosition[1]=mocapmsg.pose.position.y;
+    handPosition[2]=mocapmsg.pose.position.z;
 
     if(!_firstHandPoseReceived){
         _firstHandPoseReceived=true;
@@ -283,23 +296,23 @@ void handListener(const geometry_msgs::PoseStamped& mocapmsg){
 
     for(int i=0;i<3;i++){
 
-        mocapHistoryPosition[i].push_back(mocapPosition[i]);
+        handHistoryPosition[i].push_back(handPosition[i]);
 
     }
 
     if(mocapCounter>0){
        std::vector<double> previousSample(3,0);
        for(int i=0;i<3;i++){
-           previousSample[i]=mocapHistoryPosition[i][mocapCounter-1];
+           previousSample[i]=handHistoryPosition[i][mocapCounter-1];
        }
 
        //std::cout<<"x: "<<previousSample[0]<<", y: "<<previousSample[1]<<",z: "<<previousSample[2]<<"\n";
-       mocapVelocity=calcDtVelocity(mocapPosition,previousSample,(double)1/std::min((double)sRate,(double)mocapRate));
+       handVelocity=calcDtVelocity(handPosition,previousSample,(double)1/std::min((double)sRate,(double)mocapRate));
 
         for(int i=0;i<3;i++){
-            mocapHistoryVelocity[i].push_back(mocapVelocity[i]);
+            handHistoryVelocity[i].push_back(handVelocity[i]);
         }
-        velocityNormHistory.push_back(velocityNorm(mocapHistoryVelocity,(int)(lookBack*sRate)));
+        velocityNormHistory.push_back(velocityNorm(handHistoryVelocity,(int)(lookBack*sRate)));
         //std::cout<<"\nvel: "<<velocityNormHistory.back()<<"\n";
         //checkVelocityHistory.push_back(check_velocity(velocityNormHistory.back(),velThreshold));
         //checkVelocityHistory.push_back(1);
@@ -312,4 +325,18 @@ void handListener(const geometry_msgs::PoseStamped& mocapmsg){
 
     mocapCounter++;
     //ROS_INFO("I heard: [%d] messages from mocap\n", mocapCounter);
+}
+
+
+
+void pressureListener(const std_msgs::Float32MultiArray::ConstPtr& msg)     //Listens to pressures from Tactile sensors, updates no. of contacts
+{
+    nbContact =0;
+    for(int i =0; i< nb_tactile_input; i++)
+        if(msg->data[i]> pressure_threshold)
+            nbContact++;
+        if(nbContact>minContact)
+            _graspfinished = true;
+        else
+            _graspfinished = false;
 }
