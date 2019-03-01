@@ -17,7 +17,7 @@ find_package(catkin REQUIRED COMPONENTS
   mathlib
   gmr
   utils
-  sgaussians
+#  sgaussians
 )
 find_package(Eigen 3 QUIET) 
 if(NOT Eigen_FOUND)
