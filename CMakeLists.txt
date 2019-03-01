@@ -225,9 +225,7 @@ include_directories(${CDS_EXECUTION_INCLUDE_DIR})
 # catkin_add_nosetests(test)
 
 
-add_executable(robocds src/robocds.cpp)
-target_link_libraries(robocds ${catkin_LIBRARIES})
-add_dependencies(robocds robocds_generate_messages_cpp robocds_gencfg)
+
 
 add_executable(robocdsv2 src/robocdsv2.cpp)
 target_link_libraries(robocdsv2 ${catkin_LIBRARIES})

@@ -57,7 +57,7 @@
 	MathLib::Vector robot_base_position_filtered_mathlib;
 	MathLib::Vector robot_base_velocity_filted_mathlib;
 
-	CDDynamics *robot_base_pos_filter;								// the filter for the robot-base position
+//	CDDynamics *robot_base_pos_filter;								// the filter for the robot-base position
 
 	
 
@@ -191,9 +191,9 @@ int main(int argc, char **argv)
 //	slave_hand->printInfo();
 
 	GMRDynamics *slave_fingers = new GMRDynamics("data/slaveGMM_fingers.txt");
-	CDDynamics *finger_dynamics = new CDDynamics(1, dt, 100);
+//	CDDynamics *finger_dynamics = new CDDynamics(1, dt, 100);
 
-	GMR *coupling_hand = new GMR("data/cplGMM_pos_orientv2.txt");
+//	GMR *coupling_hand = new GMR("data/cplGMM_pos_orientv2.txt");
 
 	GMR *coupling_fingers, *coupling_fingers_lateral, *coupling_fingers_simple;
 
@@ -406,29 +406,6 @@ int main(int argc, char **argv)
 	
 
 
-
-	// filter parameters
-	double wn_filter_position, wn_filter_velocity, wn_filter_c, sample_time;
-    wn_filter_position = 10.0;
-    wn_filter_velocity = 200.0;//30
-	wn_filter_c = 25.0;
-	dim =3;
-	// robot-base's position filter
-	robot_base_pos_filter= new  CDDynamics(dim, sample_time, wn_filter_position);
-
-	robot_base_pos_filter->SetStateTarget(E2M_v(robot_base_position), E2M_v(robot_base_position));
-
-	// object's position filter
-	object_position_filter= new  CDDynamics(dim, sample_time, wn_filter_position);
-
-	object_position_filter->SetStateTarget(E2M_v(object_position), E2M_v(object_position));
-
-	// object's orientation filter
-	object_orientation_filter= new  CDDynamics(4, sample_time, wn_filter_position);
-
-	object_orientation_filter->SetStateTarget(E2M_v(object_orientation), E2M_v(object_orientation));
-
-	initOK=true;
 
 	ROS_INFO("Initialization complete\n");
 

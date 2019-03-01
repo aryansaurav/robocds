@@ -11,7 +11,7 @@
 #include <dynamic_reconfigure/server.h>
 #include "geometry_msgs/PointStamped.h"
 
-#include "CDDynamics.h"
+//#include "CDDynamics.h"
 
 /*-- Booleans --*/
 
@@ -85,7 +85,7 @@ double startTime;
 	MathLib::Vector object_orientation_filtered_mathlib;
 	MathLib::Vector object_angular_vel_filted_mathlib;
 
-    CDDynamics *object_position_filter, *object_orientation_filter; // filters for the position and orientation of the object
+//    CDDynamics *object_position_filter, *object_orientation_filter; // filters for the position and orientation of the object
 
 
     // Store the current and desired joint states.
