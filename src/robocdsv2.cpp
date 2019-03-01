@@ -1,11 +1,9 @@
 #include "robocds.h"
+#include "listener.h"
 #include "GMR.h"
 #include "ros/ros.h"
-#include "std_msgs/String.h"
-#include "std_msgs/Int16.h"
-#include "mathlib/MathLib.h"
-#include "Utils.h"
-#include "CDDynamics.h"
+
+
 
 //#include "mathlib_eigen_conversions.h"
 
@@ -13,13 +11,7 @@
 #include "Eigen/Eigen"
 
 #include "ros/ros.h"
-#include <geometry_msgs/PoseStamped.h>
-#include "geometry_msgs/Pose.h"
-#include "geometry_msgs/Twist.h"
-#include "geometry_msgs/Quaternion.h"
-#include "sensor_msgs/JointState.h"
-#include <dynamic_reconfigure/server.h>
-#include "geometry_msgs/PointStamped.h"
+
 
 #include <sstream>
 
@@ -34,20 +26,22 @@
 
 
 
-    Eigen::Vector3f _x;      // Current position [m] (3x1)
-//    Eigen::Vector3f _x0;     // Initial end effector postion (3x1)
-//    Eigen::Vector3f _v;      // Current end effector velocity [m/s] (3x1)
-    Matrix3 _wRb;    // Current rotation matrix (3x3)
-    Eigen::Vector4f _q;      // Current end effector quaternion (4x1)
     bool firstrosread = false;
     bool initOK=false;
     bool target_reached = false;
 	double dim; // dimension of the sg filter
 	float beta= 0.5;
 	float alpha = 3.0;
-	int grasp_type_temp = 0;
+	int task_state = 0;			
 
-
+	/*Task State
+	0: wait for onset of hand motion
+	1: reach the object
+	2: Reached, ready to grasp object
+	3: Grasped, waiting for signal to lift
+	4: Lifting, waiting to stop
+	5: lifted
+	*/
 
 // ----------------- variables for the robot base -----------------
 
@@ -65,62 +59,7 @@
 
 	CDDynamics *robot_base_pos_filter;								// the filter for the robot-base position
 
-
-// ----------------- variables for the object -----------------
-
-	bool _firstObjectPoseReceived=false;
-	bool _firstTargetPoseReceived=false;
-	bool _firstRealPoseReceived=false;
-	double objectPoseStamp=0;
-	float _objectZOffset=  0;
-	float _objectYOffset= 0;
-	float _objectXOffset= 0;
-	float offset_orient_y= 0.0;
- 				
-
-	Eigen::Vector3f offset_world;											// offset in the world frame
-	Eigen::Vector3f offset_object;
-
-	Eigen::Vector3f hand_link;
-
-	Eigen::Vector3f ee_offset_transformed;						// offset in the end effector frame
-
-	Eigen::VectorXd object_position(3);								// the position of the object as received from the mocap system
-
-	Eigen::VectorXd object_orientation(4);							// the orientation of the object as received from the mocap system
-
-	Eigen::Vector4f object_orientation4f;
-
-	Eigen::VectorXd object_position_filtered(3);					// the filtered position of object
-
-	Eigen::VectorXd object_orientation_filtered(4);					// the filtered orientation of the object
-
-
-// helper variables for the filtering
-
-	MathLib::Vector object_position_filtered_mathlib;
-	MathLib::Vector object_velocity_filted_mathlib;
-
-	MathLib::Vector object_orientation_filtered_mathlib;
-	MathLib::Vector object_angular_vel_filted_mathlib;
-
-    CDDynamics *object_position_filter, *object_orientation_filter; // filters for the position and orientation of the object
-
-
-    // Store the current and desired joint states.
-    sensor_msgs::JointState current_joint_state;
-    sensor_msgs::JointState desired_joint_state;
-    Eigen::Vector3f mtarget_pos;
-    Eigen::Vector4f mtarget_orient;
-    Eigen::Matrix3f mtarget_rotation;
-    Eigen::Vector3f mtarget_zaxis, mtarget_yaxis, mtarget_xaxis;
 	
-    //if using gaze tracking package
-	Eigen::VectorXf _targetPosition(3);
-	Eigen::VectorXf _targetOrientation(4);
-	Eigen::MatrixXf _targetRotMatrix;
-
-	Eigen::VectorXf desiredNextPosition(3);
 
 
     // Rotational transform from End effector to allegro hand palm
@@ -211,60 +150,7 @@ void callback(robocds::robocdsConfig &config, uint32_t level) {
 }
 
 
-void targetListener(const geometry_msgs::Pose::ConstPtr& msg){
 
-    //_msgRealPose = *msg;
-
-	offset_object = Utils::quaternionToRotationMatrix(object_orientation4f) * offset_world;
-
-    _targetPosition << -msg->position.x +offset_object[0], -msg->position.y + offset_object[1], msg->position.z+ offset_object[2];
-      object_orientation << msg->orientation.w, msg->orientation.x, msg->orientation.y, msg->orientation.z;
-//    _targetRotMatrix = Utils::quaternionToRotationMatrix(_targetOrientation);
-
-
-
-
-
-    if(!_firstTargetPoseReceived)
-    {
-        _firstTargetPoseReceived = true;
-        ROS_INFO("Target Pose received\n");
-
-        
-    }
-}
-
-//IIWA KUKA subscriber callback function for pose
-void robotListener(const geometry_msgs::Pose::ConstPtr& msg){
-
-	//_msgRealPose = *msg;
-
-
-	if(!_firstRealPoseReceived)
-	{
-		_firstRealPoseReceived = true;
-		ROS_INFO("Robot Pose received\n");
-		// _targetPosition[0]=_eePosition[0]-0.1;
-		// _targetPosition[1]=_eePosition[1]+0.05;
-		// _targetPosition[2]=_eePosition[2]-0.05;
-
-		
-	}
-	 geometry_msgs::Pose _msgRealPose = *msg;
-
-	_x << _msgRealPose.position.x, _msgRealPose.position.y, _msgRealPose.position.z;
-	_q << _msgRealPose.orientation.w, _msgRealPose.orientation.x, _msgRealPose.orientation.y, _msgRealPose.orientation.z;
-	
-
-
-}
-
-void graspListener(const std_msgs::Int16::ConstPtr& msg)
-{
-		grasp_type_temp = msg->data;
-
-
-}
 
 
 
@@ -296,28 +182,22 @@ int main(int argc, char **argv)
 	float initial_distance = 0.0;
 	double input[1] = {0.01};
 	int l_rate = 200;
-	int grasp_type =0;
+	int default_grasp_type = 1;
+
 	GMRDynamics *master_arm = new GMRDynamics("data/masterGMM_pos.txt");
-	master_arm->printInfo();
+//	master_arm->printInfo();
 
 	GMRDynamics *slave_hand = new GMRDynamics("data/slaveGMM_orient.txt");
-	slave_hand->printInfo();
+//	slave_hand->printInfo();
 
 	GMRDynamics *slave_fingers = new GMRDynamics("data/slaveGMM_fingers.txt");
 	CDDynamics *finger_dynamics = new CDDynamics(1, dt, 100);
 
 	GMR *coupling_hand = new GMR("data/cplGMM_pos_orientv2.txt");
 
-	GMR *coupling_fingers;
+	GMR *coupling_fingers, *coupling_fingers_lateral, *coupling_fingers_simple;
 
 	
-	cout<<"\nGrasp type (1 simple, 2 pinch, 3 lateral):";
-	cin>>grasp_type;
-
-	if(grasp_type == 3)
-		coupling_fingers = new GMR("data/cplGMM_pos_finger_lateral.txt");
-	else
-		coupling_fingers = new GMR("data/cplGMM_pos_finger_simple.txt");
 
 //--------------INITIALIZE COUPLING_HAND GMR ----------------------
 /*
@@ -355,11 +235,22 @@ int main(int argc, char **argv)
 	for(unsigned int i=0;i<out_dim2.size();i++)
 		out_dim2[i] = i + in_dim2.size();
 
-	// setup CDS GMR
+	coupling_fingers_lateral = new GMR("data/cplGMM_pos_finger_lateral.txt");
+	coupling_fingers_simple = new GMR("data/cplGMM_pos_finger_simple.txt");
+
+
+//	coupling_fingers->printInfo();
+
+	cout<<"\nDefault Grasp type (1 simple, 2 pinch, 3 lateral):";
+	cin>>default_grasp_type;
+
+	//loading default grasp type coupling file
+	if(default_grasp_type == 3)
+		coupling_fingers = coupling_fingers_lateral;
+	else
+		coupling_fingers = coupling_fingers_simple;
+
 	coupling_fingers->initGMR(in_dim2,out_dim2);
-
-	coupling_fingers->printInfo();
-
 
 
 //----------------USER INPUT ----------------------------------------
@@ -451,16 +342,21 @@ int main(int argc, char **argv)
 
 	ros::Subscriber graspSub = n1.subscribe("EMGinterfaceInt/grasp_type", 10, graspListener);
 
+    ros::Subscriber mocapSub=n1.subscribe("hand/pose", 10, handListener);
+
+
 //	ros::Subscriber graspSub = n1.subscribe("")
 
 	ros:: Rate loop_rate(200);
 
+/*
 	while(!_firstRealPoseReceived)
 	{
 			ros::spinOnce();
 			loop_rate.sleep();
+			ROS_INFO("Waiting for First Real Pose!");
 	}
-
+*/
 //--------------------ROS TOPICS HANDLERS END----------------------------------
 
 		ROS_INFO("Success flag!");
@@ -468,8 +364,6 @@ int main(int argc, char **argv)
 //	mcurrent_pos = E2M_v(_x);
 	ee_offset_transformed = Utils::quaternionToRotationMatrix(_q) * hand_link;
 
-	cout<<"\n Hand link Offset in EE frame: \n"<< hand_link<<endl;
-	cout<<"Hand link offset in world frame: \n"<< ee_offset_transformed<<endl;
 
 	mcurrent_pos = _x;// + ee_offset_transformed;
 //	mtarget_pos = object_position - robot_base_position;
@@ -541,28 +435,39 @@ int main(int argc, char **argv)
 	cout<<"Slerp_quaternion rescale factor (<1):";
 	cin>> input[0];
 
-	while(grasp_type_temp == 0)
+	//Wait for the motion onset
+
+	while(task_state == 0)
 	{
-			ROS_INFO("I heard grasp type: [%i]", grasp_type_temp);
+           if(check_velocity(velocityNormHistory.back(),velThreshold))
+           		task_state = 1;
+
+
+			ROS_INFO("Task state: [%i]", task_state);
 
 			ros::spinOnce();
 			loop_rate.sleep();
 	}
 
-	grasp_type = grasp_type_temp;
 
 
 	while(ros::ok())
 	{
 
+
+	if(_graspTypeReceived)
+	{
 		cout<<"grasp_type ="<<grasp_type<<endl;
 
-//		mcurrent_pos = E2M_v(_x);
+		if(grasp_type == 3)
+			coupling_fingers = coupling_fingers_lateral;
+		else
+			coupling_fingers = coupling_fingers_simple;
 
-//------------ Transforming offset values from world frame to EE frame
+		coupling_fingers->initGMR(in_dim2,out_dim2);
+		task_state = 2;
+	}
 
-
-//	cout<<"Transfromation matrix: \n"<< Utils::quaternionToRotationMatrix(_q).transpose();
 
 	gohome = false;
 	ee_offset_transformed = Utils::quaternionToRotationMatrix(_q) * hand_link;

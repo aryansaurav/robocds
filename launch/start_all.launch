@@ -5,6 +5,8 @@
   <include file="$(find epfl_allegro_launchers)/launch/epfl_right.launch">
   	    <arg name="CONTROLLER" value="torque"/>
   	      <arg name="VISUALIZE" default="false" />
+  	        <arg name="KEYBOARD" default="false" />
+
 
   </include>
 
@@ -27,6 +29,9 @@
 
 <!-- EMG Simulator to receive grasp type -->
   <node pkg="EMGinterface" type="emgSimulator" name="EMG_Simulator"/>
+
+<!-- my program -->
+  <node pkg="robocds" type="robocdsv2" name="robocds" output="screen"/>
 
 <!-- rqt graph -->
   <node pkg="rqt_graph" type="rqt_graph" name="rqt_graph"/>
