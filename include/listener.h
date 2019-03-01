@@ -19,7 +19,7 @@
 
 /*-- Variables related to TekScan pressure sensors --*/
 
-    float pressure_threshold = 0.5 ;            //pressure threshold for contact to be counted <dyn_recnfg>
+    float pressure_threshold = 0.1 ;            //pressure threshold for contact to be counted <dyn_recnfg>
     int minContact = 3;                         //Minimum no. of contacts for acknowledging grasp of object <dyn_recnfg>
     int nbContact = 0;                          //Current no. of contacts
     int nb_tactile_input = 23;                  //from robot_haptic_controller package

@@ -157,6 +157,9 @@ void callback(robocds::robocdsConfig &config, uint32_t level) {
 
   beta = config.beta;
   alpha = config.alpha;
+  minContact = config.min_Nb_contacts;
+  pressure_threshold = config.pressure_thres;
+
 }
 
 
