@@ -313,7 +313,7 @@ void handListener(const geometry_msgs::PoseStamped& mocapmsg){
             handHistoryVelocity[i].push_back(handVelocity[i]);
         }
         velocityNormHistory.push_back(velocityNorm(handHistoryVelocity,(int)(lookBack*sRate)));
-        //std::cout<<"\nvel: "<<velocityNormHistory.back()<<"\n";
+        std::cout<<"\nvel: "<<velocityNormHistory.back()<<"\n";
         //checkVelocityHistory.push_back(check_velocity(velocityNormHistory.back(),velThreshold));
         //checkVelocityHistory.push_back(1);
        // std::cout<<"velocity: " << check_velocity(velocityNormHistory.back(),velThreshold) << "\n";// << velocityNormHistory.back() << " "
@@ -337,6 +337,6 @@ void pressureListener(const std_msgs::Float32MultiArray::ConstPtr& msg)     //Li
             nbContact++;
         if(nbContact>minContact)
             _graspfinished = true;
-        else
-            _graspfinished = false;
+        // else
+        //     _graspfinished = false;
 }

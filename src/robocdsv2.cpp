@@ -35,9 +35,9 @@
 
 
 
-    int task_state = 0;         
+    int task_state = 0;  
+    int counter = 0;       
 
-    bool firstrosread = false;
     bool initOK=false;
     bool target_reached = false;
 	double dim; // dimension of the sg filter
@@ -192,7 +192,6 @@ void updateJointStates(const sensor_msgs::JointState  &joint_state_msg)
 	Vector finger_temp(1);
 
 	int temp =0;
-	int count =0;
 	double dt = 0.01;
 	float speed = 0;
 	float quat_mag = 1.0;
@@ -361,7 +360,7 @@ int main(int argc, char **argv)
 
     ros::Subscriber mocapSub=n1.subscribe("hand/pose", 10, handListener);
 
-    ros::Subscriber pressure_sub = n1.subscribe("/tactile_pressure", 10, pressureListener);
+    ros::Subscriber pressure_sub = n1.subscribe("/tactile_pressures", 10, pressureListener);
 
 
 //	ros::Subscriber graspSub = n1.subscribe("")
@@ -381,8 +380,14 @@ int main(int argc, char **argv)
 
 	ee_offset_transformed = Utils::quaternionToRotationMatrix(_q) * hand_link;
 
+	while(!_firstRealPoseReceived)
+	{
+			ros::spinOnce();
+			loop_rate.sleep();
+	}
 
-	mcurrent_pos = _x;// + ee_offset_transformed;
+
+	mcurrent_pos = _x + ee_offset_transformed;
 //	mtarget_pos = object_position - robot_base_position;
 
 //if using mocap optitrack
@@ -446,7 +451,6 @@ int main(int argc, char **argv)
 	while(ros::ok())
 	{
 
-
 	if(_graspTypeReceived)
 	{
 		cout<<"grasp_type ="<<grasp_type<<endl;
@@ -459,27 +463,35 @@ int main(int argc, char **argv)
 		coupling_fingers->initGMR(in_dim2,out_dim2);
 	}
 
-	updateTaskState();
-	if(task_state >0 && task_state<3)
-		reachTarget();
 
+
+	if(task_state!= 0) 
+		{
+			if(task_state<3)
+			{
+				reachTarget();
+				moveFingers();
+			}
 	
 
-	if(task_state == 2)
-		moveFingers();
+			// if(task_state == 2)
 
-	if(task_state == 3)
-		lift();
+			if(task_state == 3)
+				lift();
+
+
 
 
 	_pubDesiredPose.publish(_msgDesiredPose);
 	jointcmd_pub.publish(desired_joint_state);
+}
 
 
 
 
-		ros::spinOnce();
-		loop_rate.sleep();
+	updateTaskState();
+	ros::spinOnce();
+	loop_rate.sleep();
 
 
 
@@ -536,13 +548,17 @@ int main(int argc, char **argv)
 void updateTaskState()
 {
 
-    if(check_velocity(velocityNormHistory.back(),velThreshold))
-         task_state = 1;
+
+	cout<< "Task state: "<< task_state << endl;
+	if(counter>5)
+    	if(check_velocity(velocityNormHistory.back(),velThreshold))
+        	 task_state = 1;
+
     if(_graspTypeReceived)
          task_state = 2;
     if(_graspfinished)
          task_state = 3;
-
+     counter++;
 }
 
 
@@ -553,8 +569,8 @@ void reachTarget()
 	gohome = false;
 	ee_offset_transformed = Utils::quaternionToRotationMatrix(_q) * hand_link;
 
-	cout<<"\n Hand link Offset in EE frame: \n"<< hand_link<<endl;
-	cout<<"Hand link offset in world frame: \n"<< ee_offset_transformed<<endl;
+//	cout<<"\n Hand link Offset in EE frame: \n"<< hand_link<<endl;
+//	cout<<"Hand link offset in world frame: \n"<< ee_offset_transformed<<endl;
 
 
 	mcurrent_pos[0] = _x[0]+ ee_offset_transformed(0);	
@@ -584,7 +600,7 @@ void reachTarget()
 		}
 	dist = sqrt(dist);
 	std::cout<<"\ndist from the target:"<<dist<<endl;
-	std::cout<<"\nInitial dist: "<<initial_dist;
+	// std::cout<<"\nInitial dist: "<<initial_dist;
 
 
 
@@ -625,7 +641,7 @@ void reachTarget()
 			else
 			{
 									//simple grasp
-				mtarget_xaxis =  Utils::quaternionToRotationMatrix(object_orientation4f).col(0);		//hand along x-axis of object
+				mtarget_xaxis =  -Utils::quaternionToRotationMatrix(object_orientation4f).col(2);		//hand along z-axis of object
 
 				dist_xy = sqrt(mrel_pos[0]*mrel_pos[0] + (mrel_pos[1] -offset_orient_y)*(mrel_pos[1] -offset_orient_y));	//z-axis ofEE in xy plane
 																													//pointing slightly away from object
@@ -645,9 +661,9 @@ void reachTarget()
 
 
 
-	mtarget_rotation.col(0)<< -mtarget_xaxis;		//EE_x = Allegro_x
-	mtarget_rotation.col(1)<< -mtarget_zaxis;		//EE_y = Allegro_z
-	mtarget_rotation.col(2)<< -mtarget_yaxis;		//EE_z = -Allegro_y
+	mtarget_rotation.col(0)<< -mtarget_zaxis;		//EE_x = Allegro_x
+	mtarget_rotation.col(1)<< -mtarget_xaxis;		//EE_y = Allegro_z
+	mtarget_rotation.col(2)<<  mtarget_yaxis;		//EE_z = -Allegro_y
 
 //	EEtoAllegro<<0,1,0,					//rotation transform from ee to allegro palm
 //				 -1,0,0,
@@ -659,7 +675,7 @@ void reachTarget()
 
 
 	cout<<"\n End effector rotation: \n"<<  Utils::quaternionToRotationMatrix(_q);
-	cout<<"\n relative position "<<mrel_pos[0]/dist<<", "<<mrel_pos[1]/dist<<", "<< mrel_pos[2]/dist;
+//	cout<<"\n relative position "<<mrel_pos[0]/dist<<", "<<mrel_pos[1]/dist<<", "<< mrel_pos[2]/dist;
 
 
 
@@ -800,14 +816,14 @@ void reachTarget()
 	slerp_quaternion = Utils::slerpQuaternion(_q, mtarget_orient, input[0]);
 
 
-	std::cout<<"\nCurrent Quaternion:"<<endl;
-	for(int i =0;i<4;i++)
-		cout<<_q[i]<< ", ";
+	// std::cout<<"\nCurrent Quaternion:"<<endl;
+	// for(int i =0;i<4;i++)
+	// 	cout<<_q[i]<< ", ";
 //
 
-	std::cout<<"\nDesired Quaternion:"<<endl;
-	for(int i =0;i<4;i++)
-		cout<<slerp_quaternion[i]<< ", ";
+	// std::cout<<"\nDesired Quaternion:"<<endl;
+	// for(int i =0;i<4;i++)
+	// 	cout<<slerp_quaternion[i]<< ", ";
 
 
 //	_msgDesiredOrientation.w = slerp_quaternion[0];
@@ -856,9 +872,9 @@ void reachTarget()
 //		cin>>input[0];
 //		coupling_fingers->getGMROutput(input, fingers_desired);
 
-		cout<<"\n Finger desired  position: ";
-		for(int i=0; i<DOF_HAND;i++)
-			cout<<fingers_desired[i]<<",";
+		// cout<<"\n Finger desired  position: ";
+		// for(int i=0; i<DOF_HAND;i++)
+		// 	cout<<fingers_desired[i]<<",";
 
 
 //		finger_temp(0) = fingers_desired[0];
@@ -947,11 +963,11 @@ if(gohome==true)
 //		for(int i=0; i<DOF_HAND;i++)
 //			cout<<beta*fingers_nextpos[i]*180/3.14<<",";
 
-		cout<<"\n EE Current Position: "<< mcurrent_pos[0]<<", "<< mcurrent_pos[1]<<", "<< mcurrent_pos[2] << endl;
+		// cout<<"\n EE Current Position: "<< mcurrent_pos[0]<<", "<< mcurrent_pos[1]<<", "<< mcurrent_pos[2] << endl;
 
-		cout<<"Target: ";
-		for(int i=0;i<3;i++)
-			cout<<", "<< mtarget_pos[i];
+		// cout<<"Target: ";
+		// for(int i=0;i<3;i++)
+		// 	cout<<", "<< mtarget_pos[i];
 	
 
 		cout<<"\n Desired Next Position: "<< desiredNextPosition(0)<<", "<< desiredNextPosition(1)<<", "<<desiredNextPosition(2)<<endl;	

@@ -2,13 +2,13 @@
 
 
 <!-- EPFL ALLEGRO HAND RIGHT TORQUE CONTROL -->
-  <include file="$(find epfl_allegro_launchers)/launch/epfl_right.launch">
+  <!-- <include file="$(find epfl_allegro_launchers)/launch/epfl_right.launch">
   	    <arg name="CONTROLLER" value="torque"/>
   	      <arg name="VISUALIZE" default="false" />
   	        <arg name="KEYBOARD" default="false" />
 
 
-  </include>
+  </include> -->
 
 <!-- Nicholas Package for shared control of allegro hand -->
   <include file="$(find robot_haptic_controller)/launch/hand_demo_full.launch"/>
@@ -27,14 +27,18 @@
 <!-- TO BE INTEGRATED -->
 
 
-<!-- EMG Simulator to receive grasp type -->
-  <node pkg="EMGinterface" type="emgSimulator" name="EMG_Simulator"/>
+<!-- EMG Simulator to receive grasp type 
+  <node pkg="EMGinterface" type="emgInterface" name="EMGinterface"/>
+-->
+<!-- Win Bridge node -->
+
 
 <!-- my program -->
-  <node pkg="robocds" type="robocdsv2" name="robocds" output="screen"/>
+  <!-- node pkg="robocds" type="robocdsv2" name="robocds" output="screen"/ -->
 
 <!-- rqt graph -->
   <node pkg="rqt_graph" type="rqt_graph" name="rqt_graph"/>
+
 
 
 
