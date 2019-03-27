@@ -31,15 +31,27 @@
 	void updateTaskState();
 	void reachTarget();
 	void moveFingers();
+	void openFingers();
+
 	void lift();
+	void tighten();
+	void reach_home();
+	void getnextpos();
+	void nomotion();
 
 
 
     int task_state = 0;  
-    int counter = 0;       
+    int counter = 0;
+    int grasp_ready_counter = 0;       
+    int target_changed_counter = 0;
 
+    bool target_changed = false;
     bool initOK=false;
     bool target_reached = false;
+    bool grasp_ready = false;
+    bool home_reached = false;
+    bool islifted = false;
 	double dim; // dimension of the sg filter
 	float beta= 0.5;
 	float alpha = 3.0;
@@ -79,7 +91,9 @@
 
 
 
-    double home_position[3] = {-0.2, 0, 0.8};							// home postion of the end effector
+    double home_position[3] = {-0.3, 0.4, 0.5};							// home postion of the end effector
+    double lifted_position[3] = {-0.7, 0, 0.7};							// home postion of the end effector
+
     bool gohome = false;
 
 	double home_pose[DOF_JOINTS] =
@@ -101,7 +115,8 @@
     		1.2181386670994019, 0.23680379916656313, 1.1065501991473703, 1.064341795561589
     	};
 
-    double home_orient[4] = {  0.678774434852, 0.0393797267332, -0.733290070573,  -0.000419657176474};
+    double home_orient[4] = {  0.677375260261, -0.729178592443,-0.0880043262832,  0.0414315781158};
+    double home_orient2[4] = {0.63, -0.36, -0.42, 0.53};
  
 
 Eigen::VectorXd M2E_v(MathLib::Vector mm) {
@@ -183,6 +198,7 @@ void updateJointStates(const sensor_msgs::JointState  &joint_state_msg)
 	Eigen::Vector4f slerp_quaternion;
 	Eigen::Vector3f target;
 	double Psix[2];
+	double coupling_offset = -0.05;
 	REALTYPE target_orien[9], target_pos[3];
 	float JOINT_LIMIT = 0.2;
 
@@ -192,11 +208,14 @@ void updateJointStates(const sensor_msgs::JointState  &joint_state_msg)
 	Vector finger_temp(1);
 
 	int temp =0;
-	double dt = 0.01;
+	double dt = 0.3;
 	float speed = 0;
 	float quat_mag = 1.0;
 	float slerp_t = 0.5;
-	float vel_scale =0.5;
+	float vel_scale =0.3;
+	float max_speed = 0.8;
+	float min_speed = 0.2;
+
 	float dist = 0.0;
 	float dist_xy = 0.0;
 	float initial_dist = 0.0;
@@ -207,10 +226,10 @@ void updateJointStates(const sensor_msgs::JointState  &joint_state_msg)
 	GMRDynamics *master_arm = new GMRDynamics("data/masterGMM_pos.txt");
 //	master_arm->printInfo();
 
-	GMRDynamics *slave_hand = new GMRDynamics("data/slaveGMM_orient.txt");
+	// GMRDynamics *slave_hand = new GMRDynamics("data/slaveGMM_orient.txt");
 //	slave_hand->printInfo();
 
-	GMRDynamics *slave_fingers = new GMRDynamics("data/slaveGMM_fingers.txt");
+	// GMRDynamics *slave_fingers = new GMRDynamics("data/slaveGMM_fingers.txt");
 //	CDDynamics *finger_dynamics = new CDDynamics(1, dt, 100);
 
 //	GMR *coupling_hand = new GMR("data/cplGMM_pos_orientv2.txt");
@@ -220,6 +239,9 @@ void updateJointStates(const sensor_msgs::JointState  &joint_state_msg)
     geometry_msgs::Pose _msgRealPose, _msgDesiredPose;
     geometry_msgs::Quaternion _msgDesiredOrientation;
     geometry_msgs::Twist _msgDesiredTwist;
+	
+	Eigen::Vector3f _x_static;
+	bool first_orientation_set = false;
 
 	
 
@@ -321,7 +343,7 @@ int main(int argc, char **argv)
 	ros::NodeHandle n1;
 
 //  For KUKA LWR
-//	ros::Publisher desiredtwist = n1.advertise<geometry_msgs::Twist>("/lwr/joint_controllers/passive_ds_command_vel", 400);
+	ros::Publisher desiredtwist = n1.advertise<geometry_msgs::Twist>("/lwr/joint_controllers/passive_ds_command_vel", 400);
 // 	ros::Publisher desiredOrientation = n1.advertise<geometry_msgs::Quaternion>("/lwr/joint_controllers/passive_ds_command_orient", 400);
 
 //	For KUKA IIWA
@@ -436,6 +458,7 @@ int main(int argc, char **argv)
 
 	//Wait for the motion onset
 
+	task_state = 1;
 	while(task_state == 0)
 	{
 
@@ -451,122 +474,7 @@ int main(int argc, char **argv)
 	while(ros::ok())
 	{
 
-	if(_graspTypeReceived)
-	{
-		cout<<"grasp_type ="<<grasp_type<<endl;
-
-		if(grasp_type == 3)
-			coupling_fingers = coupling_fingers_lateral;
-		else
-			coupling_fingers = coupling_fingers_simple;
-
-		coupling_fingers->initGMR(in_dim2,out_dim2);
-	}
-
-
-
-	if(task_state!= 0) 
-		{
-			if(task_state<3)
-			{
-				reachTarget();
-				moveFingers();
-			}
-	
-
-			// if(task_state == 2)
-
-			if(task_state == 3)
-				lift();
-
-
-
-
-	_pubDesiredPose.publish(_msgDesiredPose);
-	jointcmd_pub.publish(desired_joint_state);
-}
-
-
-
-
-	updateTaskState();
-	ros::spinOnce();
-	loop_rate.sleep();
-
-
-
-	}
-
-
-		
-//	}
-
-/*
-	CouplingFunction(mrel_pos, Psix);
-
-	
-	coupling_hand->getGMROutput(Psix, sdesired_quaternion);
-/*
-
-
-//		std::cout<<"\nDesired_ee_pose Translation:"<<endl;
-//		for(int i =0;i<3;i++)
-//			cout<<des_ee_pose.GetTranslation()[i]<< ", ";
-//		std::cout<<"\nDesired_ee_pose Quaternion:"<<endl;
-//		for(int i =0;i<4;i++)
-//			cout<<des_ee_quaternion[i]<<", ";	
-
-/*
-	_msgDesiredPose.orientation.w= _q[0];
-	_msgDesiredPose.orientation.x= _q[1];
-	_msgDesiredPose.orientation.y= _q[2];
-	_msgDesiredPose.orientation.z= _q[3];
-*/
-//--------------------------FINGERS POSITION UPDATE-----------------
-
-
-
-
-//for KUKA IIWA
-
-// For KUKA LWR
-//		desiredtwist.publish(_msgDesiredTwist);
-
-//		desiredOrientation.publish(_msgDesiredOrientation);
-
-
-
-
-
-}
-	
-
-
-
-
-
-void updateTaskState()
-{
-
-
-	cout<< "Task state: "<< task_state << endl;
-	if(counter>5)
-    	if(check_velocity(velocityNormHistory.back(),velThreshold))
-        	 task_state = 1;
-
-    if(_graspTypeReceived)
-         task_state = 2;
-    if(_graspfinished)
-         task_state = 3;
-     counter++;
-}
-
-
-
-void reachTarget()
-{
-
-	gohome = false;
+		gohome = false;
 	ee_offset_transformed = Utils::quaternionToRotationMatrix(_q) * hand_link;
 
 //	cout<<"\n Hand link Offset in EE frame: \n"<< hand_link<<endl;
@@ -616,6 +524,182 @@ void reachTarget()
 // if using mocap optitrack
 	object_orientation4f << object_orientation(0), object_orientation(1), object_orientation(2), object_orientation(3);
 
+
+	if(_graspTypeReceived)
+	{
+		cout<<"grasp_type ="<<grasp_type<<endl;
+
+		if(grasp_type == 3)
+			coupling_fingers = coupling_fingers_lateral;
+		else
+			coupling_fingers = coupling_fingers_simple;
+
+		coupling_fingers->initGMR(in_dim2,out_dim2);
+	}
+
+		updateTaskState();
+
+
+	if(task_state!= 0) 
+		{
+			if(task_state == 1)
+			{
+				reachTarget();
+				moveFingers();
+
+			}
+
+			if(task_state == 2)
+			{
+				nomotion();
+				tighten();
+			}
+
+			if(task_state == 4)
+			{
+				lift();
+				openFingers();
+				if(islifted)
+				{
+					task_state = 1;
+					islifted = false;
+				}				
+			}
+			if(task_state == 3)
+			{
+				lift();
+				tighten();
+			}
+
+
+
+				// if(grasp_ready && (!_graspfinished)) // if ready to grasp but not grasped yet
+				
+			}
+	
+
+			// if(task_state == 2)
+
+
+
+	cout<<"\n mrel_pos: "<< mrel_pos[0]<< ", "<< mrel_pos[1]<<", "<<mrel_pos[2];
+
+	getnextpos();
+
+
+	_pubDesiredPose.publish(_msgDesiredPose);
+	jointcmd_pub.publish(desired_joint_state);
+	desiredtwist.publish(_msgDesiredTwist);
+
+
+
+	// task_state = 3;
+	ros::spinOnce();
+	loop_rate.sleep();
+
+
+
+	}
+
+
+		
+//	}
+
+/*
+	CouplingFunction(mrel_pos, Psix);
+
+	
+	coupling_hand->getGMROutput(Psix, sdesired_quaternion);
+/*
+
+
+//		std::cout<<"\nDesired_ee_pose Translation:"<<endl;
+//		for(int i =0;i<3;i++)
+//			cout<<des_ee_pose.GetTranslation()[i]<< ", ";
+//		std::cout<<"\nDesired_ee_pose Quaternion:"<<endl;
+//		for(int i =0;i<4;i++)
+//			cout<<des_ee_quaternion[i]<<", ";	
+
+/*
+	_msgDesiredPose.orientation.w= _q[0];
+	_msgDesiredPose.orientation.x= _q[1];
+	_msgDesiredPose.orientation.y= _q[2];
+	_msgDesiredPose.orientation.z= _q[3];
+*/
+//--------------------------FINGERS POSITION UPDATE-----------------
+
+
+
+
+//for KUKA IIWA
+
+// For KUKA LWR
+
+//		desiredOrientation.publish(_msgDesiredOrientation);
+
+
+
+
+
+}
+	
+
+
+
+
+
+void updateTaskState()
+{
+
+	// task state:
+	// 0	go home move fingers
+	// 1	Reach target move fingers
+	// 2	no motion tighten fingers
+	// 3	lift up tighten fingers
+	// 4	lift up open up 
+
+
+	cout<< "Task state: "<< task_state << endl;
+	if(counter>5)
+    	if(check_velocity(velocityNormHistory.back(),velThreshold))
+        	 task_state = 1;
+
+    // if(_graspTypeReceived)
+    //      task_state = 2;
+    // if(_graspfinished)
+    //      task_state = 3;
+     counter++;
+
+	// if(dist > 0.12 && task_state !=4)
+	// 	task_state = 1;
+	if(dist < 0.05 && task_state == 1)
+		task_state = 2;
+
+	if(dist> 0.2 && task_state == 2)			
+				{
+					// target_changed_counter++;
+					// if(target_changed_counter>10)
+					// {
+					// 	target_changed = true;
+
+					// }
+					ROS_INFO("Target changed! Going home!");
+					task_state = 4;
+				}
+
+
+
+
+}
+
+
+
+void reachTarget()
+{
+
+	ROS_INFO("Reaching target!");
+
+	
 // if using gaze tracking
 
 //	object_orientation4f << _targetOrientation(0), _targetOrientation(1), _targetOrientation(2), _targetOrientation(3);
@@ -641,7 +725,7 @@ void reachTarget()
 			else
 			{
 									//simple grasp
-				mtarget_xaxis =  -Utils::quaternionToRotationMatrix(object_orientation4f).col(2);		//hand along z-axis of object
+				mtarget_xaxis = - Utils::quaternionToRotationMatrix(object_orientation4f).col(2);		//hand along z-axis of object
 
 				dist_xy = sqrt(mrel_pos[0]*mrel_pos[0] + (mrel_pos[1] -offset_orient_y)*(mrel_pos[1] -offset_orient_y));	//z-axis ofEE in xy plane
 																													//pointing slightly away from object
@@ -661,20 +745,24 @@ void reachTarget()
 
 
 
-	mtarget_rotation.col(0)<< -mtarget_zaxis;		//EE_x = Allegro_x
-	mtarget_rotation.col(1)<< -mtarget_xaxis;		//EE_y = Allegro_z
-	mtarget_rotation.col(2)<<  mtarget_yaxis;		//EE_z = -Allegro_y
+	// mtarget_rotation.col(0)<< -mtarget_zaxis;		//EE_x = Allegro_x
+	// mtarget_rotation.col(1)<< -mtarget_xaxis;		//EE_y = Allegro_x
+	// mtarget_rotation.col(2)<<  mtarget_yaxis;		//EE_z = -Allegro_y
+
+	mtarget_rotation.col(0)<< -mtarget_zaxis;		//EE_x = -Allegro_z
+	mtarget_rotation.col(1)<< -mtarget_xaxis;		//EE_y = -Allegro_x
+	mtarget_rotation.col(2)<<  mtarget_yaxis;		//EE_z =  Allegro_y
 
 //	EEtoAllegro<<0,1,0,					//rotation transform from ee to allegro palm
 //				 -1,0,0,
 //				 0,0,1;
 
-	cout<<"\n object rotation : \n"<< Utils::quaternionToRotationMatrix(object_orientation4f);
+	// cout<<"\n object rotation : \n"<< Utils::quaternionToRotationMatrix(object_orientation4f);
 
-	cout<<"\n target rotation : \n"<< mtarget_rotation;
+	// cout<<"\n target rotation : \n"<< mtarget_rotation;
 
 
-	cout<<"\n End effector rotation: \n"<<  Utils::quaternionToRotationMatrix(_q);
+	// cout<<"\n End effector rotation: \n"<<  Utils::quaternionToRotationMatrix(_q);
 //	cout<<"\n relative position "<<mrel_pos[0]/dist<<", "<<mrel_pos[1]/dist<<", "<< mrel_pos[2]/dist;
 
 
@@ -684,34 +772,11 @@ void reachTarget()
 
 
 //--------------------- OUT OF RANGE ---------------------------------------------
-	if(mtarget_pos[0]*mtarget_pos[0] + mtarget_pos[1]*mtarget_pos[1]  + mtarget_pos[2]*mtarget_pos[2] > 1.5)
+	if(mtarget_pos[0]*mtarget_pos[0] + mtarget_pos[1]*mtarget_pos[1]  + mtarget_pos[2]*mtarget_pos[2] > 1.2)
 	{
 
-		ROS_INFO("\n Target out of reach (>0.10)!!! Going home!");
 		gohome = true;
-		mcurrent_pos[0] = _x[0] ;	
-		mcurrent_pos[1] = _x[1] ;
-		mcurrent_pos[2] = _x[2] ;
-
-		mtarget_pos[0] = home_position[0] ;
-		mtarget_pos[1] = home_position[1] ;
-		mtarget_pos[2] = home_position[2] ;
-
-		mtarget_orient[0] = home_orient[0];
-		mtarget_orient[1] = home_orient[1];
-		mtarget_orient[2] = home_orient[2];
-		mtarget_orient[3] = home_orient[3];
-
-
-
-
-	for(int i=0;i<3;i++)
-		{
-			mrel_pos[i] = mtarget_pos[i] - mcurrent_pos[i] ;
-			initial_dist += mrel_pos[i]*mrel_pos[i];
-		}
-
-	initial_dist = sqrt(initial_dist);
+		reach_home();
 	}
 
 
@@ -725,133 +790,13 @@ void reachTarget()
 //	}
 //	else
 //	{
-		for(int k =0; k <3; k++)
-		{
-			temp1[k] = -mrel_pos[k];
-		}
-		master_arm->getGMROutput(temp1, temp2);
-
-		mrel_vel<< temp2[0], temp2[1], temp2[2];
-
-
-			speed = sqrt(mrel_vel[0]*mrel_vel[0] + mrel_vel[1]*mrel_vel[1] + mrel_vel[2]*mrel_vel[2]) ;
-		
-		if(speed>vel_scale)
-			{
-				vel_scale = speed;
-				cout<<"\n!!!!High speed:"<<speed;
-			}
-
-			mrel_vel[0] = 0.3*mrel_vel[0]/vel_scale;
-			mrel_vel[1] = 0.3*mrel_vel[1]/vel_scale;
-			mrel_vel[2] = 0.3*mrel_vel[2]/vel_scale;
-
-		speed = sqrt(mrel_vel[0]*mrel_vel[0] + mrel_vel[1]*mrel_vel[1] + mrel_vel[2]*mrel_vel[2]) ;
-
-		if((speed<0.3) && (dist>0.005) && gohome==false)
-		{
-			mrel_vel[0] = 0.3*mrel_vel[0]/speed;
-			mrel_vel[1] = 0.3*mrel_vel[1]/speed;
-			mrel_vel[2] = 0.3*mrel_vel[2]/speed;
-
-			cout<<"\n !!!!Low speed:"<<speed;
-		}
-
-		if(dist < 0.03)
-		{
-			target_reached = true;
-			ROS_INFO("Target reached (<0.05)!");
-		}
-
-		if(dist > 0.05)
-			target_reached = false;
-
-		if(target_reached)
-		{
-			mrel_vel[0] = 0;
-			mrel_vel[1] = 0;
-			mrel_vel[2] = 0;
-		}
-		std::cout<<"\nDesired velocity:"<<endl;
-		for(int i =0;i<3;i++)
-//			cout<<curr_ee_pose.GetTranslation()[i]<< ", ";
-		cout<<mrel_vel[i]<< ", ";
-
-		speed = sqrt(mrel_vel[0]*mrel_vel[0] + mrel_vel[1]*mrel_vel[1] + mrel_vel[2]*mrel_vel[2]) ;
-
-		cout<<"Speed: "<<speed<<endl;
-
-//		for KUKA LWR
-//		_msgDesiredTwist.linear.x  = mrel_vel[0];
-//		_msgDesiredTwist.linear.y  = mrel_vel[1];
-//		_msgDesiredTwist.linear.z  = mrel_vel[2];
-//		_msgDesiredTwist.angular.x = 0;
-//		_msgDesiredTwist.angular.y = 0;
-//		_msgDesiredTwist.angular.z = 0;
-
-
-/*	quat_mag = sqrt(sdesired_quaternion[0]*sdesired_quaternion[0] + 
-		sdesired_quaternion[1]*sdesired_quaternion[1] + 
-		sdesired_quaternion[2] * sdesired_quaternion[2] + 
-		sdesired_quaternion[3] * sdesired_quaternion[3]);
-*/
-
-/*	slerp_quaternion[0] = sdesired_quaternion[0]/quat_mag;
-	slerp_quaternion[1] = sdesired_quaternion[1]/quat_mag;
-	slerp_quaternion[2] = sdesired_quaternion[2]/quat_mag;
-	slerp_quaternion[3] = sdesired_quaternion[3]/quat_mag;
-*/
-
-/*	quat_mag = sqrt(mtarget_orient[0]*mtarget_orient[0] + 
-		mtarget_orient[1]*mtarget_orient[1] + 
-		mtarget_orient[2] * mtarget_orient[2] + 
-		mtarget_orient[3] * mtarget_orient[3]);
-
-	slerp_quaternion[0] = mtarget_orient[0]/quat_mag;
-	slerp_quaternion[1] = mtarget_orient[1]/quat_mag;
-	slerp_quaternion[2] = mtarget_orient[2]/quat_mag;
-	slerp_quaternion[3] = mtarget_orient[3]/quat_mag;
-*/
-//	slerp_quaternion = Utils::slerpQuaternion(_q, slerp_quaternion, input[0]*(1- input[0]*dist/initial_dist));
-	slerp_quaternion = Utils::slerpQuaternion(_q, mtarget_orient, input[0]);
-
-
-	// std::cout<<"\nCurrent Quaternion:"<<endl;
-	// for(int i =0;i<4;i++)
-	// 	cout<<_q[i]<< ", ";
-//
-
-	// std::cout<<"\nDesired Quaternion:"<<endl;
-	// for(int i =0;i<4;i++)
-	// 	cout<<slerp_quaternion[i]<< ", ";
-
-
-//	_msgDesiredOrientation.w = slerp_quaternion[0];
-//	_msgDesiredOrientation.x = slerp_quaternion[1];
-//	_msgDesiredOrientation.y = slerp_quaternion[2];
-//	_msgDesiredOrientation.z = slerp_quaternion[3];
-
-	_msgDesiredPose.orientation.w= slerp_quaternion[0];
-	_msgDesiredPose.orientation.x= slerp_quaternion[1];
-	_msgDesiredPose.orientation.y= slerp_quaternion[2];
-	_msgDesiredPose.orientation.z= slerp_quaternion[3];
-
-	desiredNextPosition[0]=mrel_vel[0]*(1.0/50)+ _x[0];
-	desiredNextPosition[1]=mrel_vel[1]*(1.0/50)+ _x[1];
-	desiredNextPosition[2]=mrel_vel[2]*(1.0/50)+ _x[2];
-
-
-
-	_msgDesiredPose.position.x=desiredNextPosition[0];
-	_msgDesiredPose.position.y=desiredNextPosition[1];
-	_msgDesiredPose.position.z=desiredNextPosition[2];
 
 }
 
 
 	void moveFingers()
 {
-
+		ROS_INFO("Moving fingers!");
 
 		fingers_current[0] = current_joint_state.position[12];		//thumb 0
 		fingers_current[1] = current_joint_state.position[13];		//thumb 1
@@ -865,7 +810,7 @@ void reachTarget()
 
 
 //		CouplingFunction(mrel_pos, Psix);
-		Psix[0] = alpha*dist;
+		Psix[0] = alpha*dist + coupling_offset;
 		coupling_fingers->getGMROutput(Psix, fingers_desired);
 
 //		cout<<"GMR Input: ";
@@ -902,10 +847,10 @@ void reachTarget()
 		desired_joint_state.position[9] =  beta*fingers_nextpos[4];
 		desired_joint_state.position[10] =  beta*fingers_nextpos[2];
 		desired_joint_state.position[11] =  beta*fingers_nextpos[3];
-		desired_joint_state.position[12] =  beta*fingers_nextpos[0];
-		desired_joint_state.position[13] =  beta*fingers_nextpos[1];
-		desired_joint_state.position[14] =  beta*fingers_nextpos[2];
-		desired_joint_state.position[15] =  beta*fingers_nextpos[3];
+		desired_joint_state.position[12] =  1.4;	//beta*fingers_nextpos[0];
+		desired_joint_state.position[13] =  beta*fingers_nextpos[1] - 0.2;
+		desired_joint_state.position[14] =  beta*fingers_nextpos[2] - 0.5;
+		desired_joint_state.position[15] =  beta*fingers_nextpos[3] - 0.2;
 
 		if(grasp_type == 2)			//Pinch grasp
 {
@@ -970,7 +915,6 @@ if(gohome==true)
 		// 	cout<<", "<< mtarget_pos[i];
 	
 
-		cout<<"\n Desired Next Position: "<< desiredNextPosition(0)<<", "<< desiredNextPosition(1)<<", "<<desiredNextPosition(2)<<endl;	
 
 
 /*	for(int i=0;i<DOF_JOINTS;i++)
@@ -988,21 +932,260 @@ if(gohome==true)
 
 void lift()				//move the arm in the direction of hand marker leaving the orientation unchanged
 {
-	desiredNextPosition[0]=handVelocity[0]*(1.0/50)+ _x[0];
-	desiredNextPosition[1]=handVelocity[1]*(1.0/50)+ _x[1];
-	desiredNextPosition[2]=handVelocity[2]*(1.0/50)+ _x[2];
+	ROS_INFO("Lifting hand up!");
+	for(int i=0; i<2;i++)
+		{
+			mrel_pos[i] = lifted_position[i] - mcurrent_pos[i] ;
+		}
 
+
+
+// if(!first_orientation_set)
+// 	{
+
+// 		_msgDesiredPose.orientation.w= _q[0];
+// 		_msgDesiredPose.orientation.x= _q[1];
+// 		_msgDesiredPose.orientation.y= _q[2];
+// 		_msgDesiredPose.orientation.z=  _q[3];
+// 		first_orientation_set = true;
+// 	}
+	if(sqrt(mrel_pos[0]*mrel_pos[0] + mrel_pos[1]*mrel_pos[1] + mrel_pos[2]*mrel_pos[2]) < 0.1)
+		islifted = true;
+
+
+}
+
+void tighten()
+{	
+	ROS_INFO("Tightening grip! ");
+	
+	for(int i=0;i<12;i++)
+		if(task_state != 3 && desired_joint_state.position[i]<1.5)
+			desired_joint_state.position[i] += 0.01;
+
+			desired_joint_state.position[0] = 0;
+			desired_joint_state.position[4] = 0;
+			desired_joint_state.position[8] = 0;
+
+
+
+
+
+			
+
+}
+
+
+void openFingers()
+{
+	ROS_INFO("Opening grip! ");
+	
+	for(int i=0;i<15;i++)
+			desired_joint_state.position[i] = 0.0;
+
+	
+}
+
+void reach_home()
+{
+	ROS_INFO("\n Going home!");
+		// grasp_ready = false;
+		// mcurrent_pos[0] = _x[0] ;	
+		// mcurrent_pos[1] = _x[1] ;
+		// mcurrent_pos[2] = _x[2] ;
+
+		// mtarget_pos[0] = home_position[0] ;
+		// mtarget_pos[1] = home_position[1] ;
+		// mtarget_pos[2] = home_position[2] ;
+
+		mtarget_orient[0] = home_orient[0];
+		mtarget_orient[1] = home_orient[1];
+		mtarget_orient[2] = home_orient[2];
+		mtarget_orient[3] = home_orient[3];
+
+
+	initial_dist  = 0; 
+
+	for(int i=0;i<3;i++)
+		{
+			mrel_pos[i] = home_position[i] - mcurrent_pos[i] ;
+			initial_dist += mrel_pos[i]*mrel_pos[i];
+		}
+
+	initial_dist = sqrt(initial_dist);
+	if (initial_dist < 0.2)
+		home_reached = true;
+	if(home_reached)
+	{
+		ROS_INFO("Reached home!");
+		// grasp_ready = false;
+	}
+
+
+}
+
+void getnextpos()
+{
+			for(int k =0; k <3; k++)
+		{
+			temp1[k] = -mrel_pos[k];
+		}
+		master_arm->getGMROutput(temp1, temp2);
+
+		mrel_vel<< temp2[0], temp2[1], temp2[2];
+
+
+			speed = sqrt(mrel_vel[0]*mrel_vel[0] + mrel_vel[1]*mrel_vel[1] + mrel_vel[2]*mrel_vel[2]) ;
+		cout<<"\nSpeed:"<<speed<< "\t vel_scale: "<<vel_scale;
+
+		if(speed>max_speed)
+			{
+				vel_scale = speed;
+				cout<<"\n!!!!High speed:"<<speed;
+				// cin>>grasp_type;
+
+				mrel_vel[0] = max_speed*mrel_vel[0]/vel_scale;
+				mrel_vel[1] = max_speed*mrel_vel[1]/vel_scale;
+				mrel_vel[2] = max_speed*mrel_vel[2]/vel_scale;
+
+
+
+
+			}
+
+
+
+		speed = sqrt(mrel_vel[0]*mrel_vel[0] + mrel_vel[1]*mrel_vel[1] + mrel_vel[2]*mrel_vel[2]) ;
+
+		// if((speed<0.15) && (task_state != 2))
+		// {
+		// 	mrel_vel[0] = min_speed*mrel_vel[0]/speed;
+		// 	mrel_vel[1] = min_speed*mrel_vel[1]/speed;
+		// 	mrel_vel[2] = min_speed*mrel_vel[2]/speed;
+
+		// 	cout<<"\n !!!!Low speed:"<<speed;
+		// }
+
+
+		// if(dist > 0.04)
+		// 	target_reached = false;
+		// else if(dist < 0.03)
+		// {
+		// 	target_reached = true;
+		// 	ROS_INFO("Target reached (<0.05)!");
+		// 	_x_static = _x;			// record current end effector position, better approach to gravity compensation issue
+
+		// }
+
+		// if(target_reached)
+		// {
+		// 	mrel_vel[0] = 0;
+		// 	mrel_vel[1] = 0;
+		// 	mrel_vel[2] = 0;
+		// }
+
+		// if(speed<0.1)		// To prevent vibrations
+		// {
+		// 	mrel_vel[0] = 0;
+		// 	mrel_vel[1] = 0;
+		// 	mrel_vel[2] = 0;
+		// }
+
+
+		std::cout<<"\nDesired velocity:"<<endl;
+		for(int i =0;i<3;i++)
+//			cout<<curr_ee_pose.GetTranslation()[i]<< ", ";
+		cout<<mrel_vel[i]<< ", ";
+
+		speed = sqrt(mrel_vel[0]*mrel_vel[0] + mrel_vel[1]*mrel_vel[1] + mrel_vel[2]*mrel_vel[2]) ;
+
+		cout<<"Speed: "<<speed<<endl;
+
+//		for KUKA LWR
+		_msgDesiredTwist.linear.x  = mrel_vel[0];
+		_msgDesiredTwist.linear.y  = mrel_vel[1];
+		_msgDesiredTwist.linear.z  = mrel_vel[2];
+//		_msgDesiredTwist.angular.x = 0;
+//		_msgDesiredTwist.angular.y = 0;
+//		_msgDesiredTwist.angular.z = 0;
+
+
+/*	quat_mag = sqrt(sdesired_quaternion[0]*sdesired_quaternion[0] + 
+		sdesired_quaternion[1]*sdesired_quaternion[1] + 
+		sdesired_quaternion[2] * sdesired_quaternion[2] + 
+		sdesired_quaternion[3] * sdesired_quaternion[3]);
+*/
+
+/*	slerp_quaternion[0] = sdesired_quaternion[0]/quat_mag;
+	slerp_quaternion[1] = sdesired_quaternion[1]/quat_mag;
+	slerp_quaternion[2] = sdesired_quaternion[2]/quat_mag;
+	slerp_quaternion[3] = sdesired_quaternion[3]/quat_mag;
+*/
+
+/*	quat_mag = sqrt(mtarget_orient[0]*mtarget_orient[0] + 
+		mtarget_orient[1]*mtarget_orient[1] + 
+		mtarget_orient[2] * mtarget_orient[2] + 
+		mtarget_orient[3] * mtarget_orient[3]);
+
+	slerp_quaternion[0] = mtarget_orient[0]/quat_mag;
+	slerp_quaternion[1] = mtarget_orient[1]/quat_mag;
+	slerp_quaternion[2] = mtarget_orient[2]/quat_mag;
+	slerp_quaternion[3] = mtarget_orient[3]/quat_mag;
+*/
+//	slerp_quaternion = Utils::slerpQuaternion(_q, slerp_quaternion, input[0]*(1- input[0]*dist/initial_dist));
+	slerp_quaternion = Utils::slerpQuaternion(_q, mtarget_orient, input[0]);
+
+
+	// std::cout<<"\nCurrent Quaternion:"<<endl;
+	// for(int i =0;i<4;i++)
+	// 	cout<<_q[i]<< ", ";
+//
+
+	// std::cout<<"\nDesired Quaternion:"<<endl;
+	// for(int i =0;i<4;i++)
+	// 	cout<<slerp_quaternion[i]<< ", ";
+
+
+//	_msgDesiredOrientation.w = slerp_quaternion[0];
+//	_msgDesiredOrientation.x = slerp_quaternion[1];
+//	_msgDesiredOrientation.y = slerp_quaternion[2];
+//	_msgDesiredOrientation.z = slerp_quaternion[3];
+
+	_msgDesiredPose.orientation.w= slerp_quaternion[0];
+	_msgDesiredPose.orientation.x= slerp_quaternion[1];
+	_msgDesiredPose.orientation.y= slerp_quaternion[2];
+	_msgDesiredPose.orientation.z= slerp_quaternion[3];
+
+	// if(!grasp_ready)
+	// {
+
+	desiredNextPosition[0]=mrel_vel[0]*dt + _x[0];
+	desiredNextPosition[1]=mrel_vel[1]*dt + _x[1];
+	desiredNextPosition[2]=mrel_vel[2]*dt + _x[2];
+
+	// }
+	// else
+	// {
+
+	// desiredNextPosition[0]= _x[0];
+	// desiredNextPosition[1]= _x[1];
+	// desiredNextPosition[2]= _x[2];
+
+	// }	
+		cout<<"\n Desired Next Position: "<< desiredNextPosition(0)<<", "<< desiredNextPosition(1)<<", "<<desiredNextPosition(2)<<endl;	
 
 
 	_msgDesiredPose.position.x=desiredNextPosition[0];
 	_msgDesiredPose.position.y=desiredNextPosition[1];
 	_msgDesiredPose.position.z=desiredNextPosition[2];
 
-
-	_msgDesiredPose.orientation.w= _q[0];
-	_msgDesiredPose.orientation.x= _q[1];
-	_msgDesiredPose.orientation.y= _q[2];
-	_msgDesiredPose.orientation.z= _q[3];
-
-
 }
+
+void nomotion()
+{
+
+	mrel_pos[0] = 0;
+	mrel_pos[1] = 0;	
+	mrel_pos[2] = 0;
+}
+

@@ -1,10 +1,9 @@
 #include "robocds.h"
+#include "listener.h"
 #include "GMR.h"
 #include "ros/ros.h"
-#include "std_msgs/String.h"
-#include "mathlib/MathLib.h"
-#include "Utils.h"
-#include "CDDynamics.h"
+
+
 
 //#include "mathlib_eigen_conversions.h"
 
@@ -12,14 +11,7 @@
 #include "Eigen/Eigen"
 
 #include "ros/ros.h"
-#include <geometry_msgs/PoseStamped.h>
-#include "geometry_msgs/Pose.h"
-#include "geometry_msgs/Twist.h"
-#include "geometry_msgs/Quaternion.h"
-#include "sensor_msgs/JointState.h"
-#include <dynamic_reconfigure/server.h>
-#include "geometry_msgs/PointStamped.h"
-#include "sensor_msgs/JointState.h"
+
 
 #include <sstream>
 
@@ -35,17 +27,43 @@
 
 
 
-    Eigen::VectorXd _x(3);      // Current position [m] (3x1)
-//    Eigen::Vector3f _x0;     // Initial end effector postion (3x1)
-//    Eigen::Vector3f _v;      // Current end effector velocity [m/s] (3x1)
-    Matrix3 _wRb;    // Current rotation matrix (3x3)
-    Eigen::Vector4f _q;      // Current end effector quaternion (4x1)
-    bool firstrosread = false;
+
+	void updateTaskState();
+	void reachTarget();
+	void moveFingers();
+	void openFingers();
+
+	void lift();
+	void tighten();
+	void reach_home();
+	void getnextpos();
+	void nomotion();
+
+
+
+    int task_state = 0;  
+    int counter = 0;
+    int grasp_ready_counter = 0;       
+    int target_changed_counter = 0;
+
+    bool target_changed = false;
     bool initOK=false;
+    bool target_reached = false;
+    bool grasp_ready = false;
+    bool home_reached = false;
+    bool islifted = false;
 	double dim; // dimension of the sg filter
 	float beta= 0.5;
 	float alpha = 3.0;
 
+	/*Task State
+	0: wait for onset of hand motion
+	1: reach the object
+	2: Reached, ready to grasp object
+	3: Grasped, waiting for signal to lift
+	4: Lifting, waiting to stop
+	5: lifted
+	*/
 
 // ----------------- variables for the robot base -----------------
 
@@ -61,51 +79,22 @@
 	MathLib::Vector robot_base_position_filtered_mathlib;
 	MathLib::Vector robot_base_velocity_filted_mathlib;
 
-	CDDynamics *robot_base_pos_filter;								// the filter for the robot-base position
+//	CDDynamics *robot_base_pos_filter;								// the filter for the robot-base position
+
+	
 
 
-// ----------------- variables for the object -----------------
+    // Rotational transform from End effector to allegro hand palm
 
-	bool _firstObjectPoseReceived=false;
-	double objectPoseStamp=0;
-	float _objectZOffset=  0;
-	float _objectYOffset= 0;
-	float _objectXOffset= 0;
-
-	Eigen::Vector3f offset_world;											// offset in the world frame
-
-	Eigen::Vector3f hand_link;
-
-	Eigen::Vector3f ee_offset_transformed;						// offset in the end effector frame
-
-	Eigen::VectorXd object_position(3);								// the position of the object as received from the mocap system
-
-	Eigen::VectorXd object_orientation(4);							// the orientation of the object as received from the mocap system
-
-	Eigen::VectorXd object_position_filtered(3);					// the filtered position of object
-
-	Eigen::VectorXd object_orientation_filtered(4);					// the filtered orientation of the object
+    Eigen::Matrix3f EEtoAllegro;
+    // EEtoAllegro<<1,0,0,0,0,1,0,-1,0;
 
 
-// helper variables for the filtering
 
-	MathLib::Vector object_position_filtered_mathlib;
-	MathLib::Vector object_velocity_filted_mathlib;
+    double home_position[3] = {-0, 0.4, 0.5};							// home postion of the end effector
+    double lifted_position[3] = {-0.7, 0, 0.5};							// home postion of the end effector
 
-	MathLib::Vector object_orientation_filtered_mathlib;
-	MathLib::Vector object_angular_vel_filted_mathlib;
-
-    CDDynamics *object_position_filter, *object_orientation_filter; // filters for the position and orientation of the object
-
-
-    // Store the current and desired joint states.
-    sensor_msgs::JointState current_joint_state;
-    sensor_msgs::JointState desired_joint_state;
-    double mtarget_pos[3];
-    double mtarget_orient[4];
-
-    double home_position[3] = {-0.5, 0, 0.5};							// home postion of the end effector
-
+    bool gohome = false;
 
 	double home_pose[DOF_JOINTS] =
         {
@@ -126,7 +115,7 @@
     		1.2181386670994019, 0.23680379916656313, 1.1065501991473703, 1.064341795561589
     	};
 
-    double home_orient[4] = {  0.678774434852, 0.0393797267332, -0.733290070573,  -0.000419657176474};
+    double home_orient[4] = {  0.677375260261, -0.729178592443,-0.0880043262832,  0.0414315781158};
  
 
 Eigen::VectorXd M2E_v(MathLib::Vector mm) {
@@ -168,210 +157,99 @@ void CouplingFunction(double* input, double* output)
 //-------------------------Dynamic reconfigure callback function --------------
 
 void callback(robocds::robocdsConfig &config, uint32_t level) {
-  ROS_INFO("Reconfigure Request: %f %f %f %f %f", 
-            config.offset_x, config.offset_y, 
-            config.offset_z, config.beta, config.alpha);
+//  ROS_INFO("Reconfigure Request: %f %f %f %f %f", 
+//           config.offset_x, config.offset_y, 
+//          config.offset_z, config.beta, config.alpha);
 //  offset_world[0] = config.offset_x;
 //  offset_world[1] = config.offset_y;
 //  offset_world[2] = config.offset_z;
   
   offset_world << config.offset_x, config.offset_y, config.offset_z;
   hand_link	<< config.hand_x, config.hand_y, config.hand_z;
+  offset_orient_y = config.offset_orient;
+ 
 
   beta = config.beta;
   alpha = config.alpha;
-}
-
-
-void updateRealPose(const geometry_msgs::Pose::ConstPtr& msg)
-{
-	if(firstrosread== false)
-	{
-		firstrosread = true;
-		ROS_INFO("First position read!");
-	}
-
-
-	 geometry_msgs::Pose _msgRealPose = *msg;
-
-	// Update end effecotr pose (position+orientation)
-	_x << _msgRealPose.position.x, _msgRealPose.position.y, _msgRealPose.position.z;
-	_q << _msgRealPose.orientation.w, _msgRealPose.orientation.x, _msgRealPose.orientation.y, _msgRealPose.orientation.z;
-
+  minContact = config.min_Nb_contacts;
+  pressure_threshold = config.pressure_thres;
 
 }
+
+
+
+
+
 
 void updateJointStates(const sensor_msgs::JointState  &joint_state_msg)
 {
 	current_joint_state = joint_state_msg;
 }
 
-void objectListener(const geometry_msgs::PoseStamped& mocapmsg)
-{
-
-	    /*-- Callback function for acquiring the position of the base of the robot arm --*/
-    
-
-	if(!_firstObjectPoseReceived)
-	{
-			
-			_firstObjectPoseReceived=true;
-
-			// extract position from the message
-		   	object_position(0)=mocapmsg.pose.position.x- offset_world[0];
-		    object_position(1)=mocapmsg.pose.position.y- offset_world[1];
-		    object_position(2)=mocapmsg.pose.position.z- offset_world[2];
-
-		    // extract orientation from the message
-		    object_orientation << mocapmsg.pose.orientation.w, mocapmsg.pose.orientation.x, mocapmsg.pose.orientation.y, mocapmsg.pose.orientation.z;
-
-			// std::cout<<"Initial object pose received\n";
-			ROS_INFO("Initial object pose received\n");
-
-			// update the stamp of the mocap system
-		    objectPoseStamp=mocapmsg.header.seq;
-		
-	}else{
-		if(mocapmsg.header.seq!=objectPoseStamp){
-
-			// extract position from the message
-		   	object_position(0)=mocapmsg.pose.position.x- offset_world[0];
-		    object_position(1)=mocapmsg.pose.position.y- offset_world[1];
-		    object_position(2)=mocapmsg.pose.position.z- offset_world[2];
-
-		    // extract orientation from the message
-		    object_orientation << mocapmsg.pose.orientation.w, mocapmsg.pose.orientation.x, mocapmsg.pose.orientation.y, mocapmsg.pose.orientation.z;
-
-		    if (initOK){
-				// filtering the object's position:
-
-				// set the new position of the object
-				object_position_filter->SetTarget(E2M_v(object_position));
-
-				// update the filter
-				object_position_filter->Update();
-
-				// get filtered position of the objcet
-				object_position_filter->GetState(object_position_filtered_mathlib, object_velocity_filted_mathlib);
-				
-				// convert the filtered position from mathlib to Eigen
-				object_position_filtered=M2E_v(object_position_filtered_mathlib);
 
 
-				// filtering the object's orientation:
+/*	Declarations used in main program */
 
-				// set the new orientation of the object in the filter
-				object_orientation_filter->SetTarget(E2M_v(object_orientation));
+	Eigen::Vector3f mrel_vel, mrel_pos, mcurrent_pos;
+	double temp1[3], temp2[3];
 
-				// update the filter
-				object_orientation_filter->Update();
+	double starget_quaternion[4], scurrent_quaternion[4], sdesired_quaternion[4], srel_quaternion[4];
+	Eigen::Vector4f slerp_quaternion;
+	Eigen::Vector3f target;
+	double Psix[2];
+	double coupling_offset = -0.05;
+	REALTYPE target_orien[9], target_pos[3];
+	float JOINT_LIMIT = 0.2;
 
-				// get filtered orientation of the objcet
-				object_position_filter->GetState(object_orientation_filtered_mathlib, object_angular_vel_filted_mathlib);
 
-				// convert the filtered position from mathlib to Eigen
-				object_orientation_filtered= M2E_v(object_orientation_filtered_mathlib);
+	double fingers_current[DOF_HAND], fingers_desired[DOF_HAND], fingers_relpos[DOF_HAND];
+	double fingers_relvel[DOF_HAND], fingers_nextpos[DOF_HAND];
+	Vector finger_temp(1);
 
-				// update the stamp of the mocap system
-			    objectPoseStamp=mocapmsg.header.seq;
-		    }
+	int temp =0;
+	double dt = 0.05;
+	float speed = 0;
+	float quat_mag = 1.0;
+	float slerp_t = 0.5;
+	float vel_scale =0.3;
+	float max_speed = 0.3;
+	float dist = 0.0;
+	float dist_xy = 0.0;
+	float initial_dist = 0.0;
+	double input[1] = {0.01};
+	int l_rate = 200;
+	int default_grasp_type = 1;
+
+	GMRDynamics *master_arm = new GMRDynamics("data/masterGMM_pos.txt");
+//	master_arm->printInfo();
+
+	// GMRDynamics *slave_hand = new GMRDynamics("data/slaveGMM_orient.txt");
+//	slave_hand->printInfo();
+
+	// GMRDynamics *slave_fingers = new GMRDynamics("data/slaveGMM_fingers.txt");
+//	CDDynamics *finger_dynamics = new CDDynamics(1, dt, 100);
+
+//	GMR *coupling_hand = new GMR("data/cplGMM_pos_orientv2.txt");
+
+	GMR *coupling_fingers, *coupling_fingers_lateral, *coupling_fingers_simple;
+ 
+    geometry_msgs::Pose _msgRealPose, _msgDesiredPose;
+    geometry_msgs::Quaternion _msgDesiredOrientation;
+    geometry_msgs::Twist _msgDesiredTwist;
 	
+	Eigen::Vector3f _x_static;
+	bool first_orientation_set = false;
 
-		}
-	}
-
-
-    //ROS_INFO("I heard: [%d] messages from mocap\n", mocapCounter);
-}
-
-void robotBaseListener(const geometry_msgs::PoseStamped& mocapmsg){
-
-    /*-- Callback function for acquiring the position of the base of the robot arm --*/
-    
-
-	if(!_firstKukaBasePoseReceived)
-	{
-			
-			_firstKukaBasePoseReceived=true;
-
-			// extract position from the message
-		   	robot_base_position(0)=mocapmsg.pose.position.x;
-		    robot_base_position(1)=mocapmsg.pose.position.y;
-		    robot_base_position(2)=mocapmsg.pose.position.z;
-
-			// std::cout<<"Initial robot base pose received\n";
-			ROS_INFO("Initial robot base pose received\n");
-			
-			// update the stamp of the mocap system
-		    robotBaseStamp=mocapmsg.header.seq;
-		
-	}else{
-		if(mocapmsg.header.seq!=robotBaseStamp){
-
-			// extract position from the message
-			robot_base_position(0)=mocapmsg.pose.position.x;
-		    robot_base_position(1)=mocapmsg.pose.position.y;
-		    robot_base_position(2)=mocapmsg.pose.position.z;
-
-			if (initOK){
-				// filtering the robot base position:
-
-				// set the new position of the robot base
-				robot_base_pos_filter->SetTarget(E2M_v(robot_base_position));
-
-				// update the filter
-				robot_base_pos_filter->Update();
-
-				// get filtered positiono of the robot's base
-				robot_base_pos_filter->GetState(robot_base_position_filtered_mathlib, robot_base_velocity_filted_mathlib);
-				
-				// convert the filtered position from mathlib to Eigen
-				robot_base_position_filtered=M2E_v(robot_base_position_filtered_mathlib);
-
-				// update the stamp of the mocap system
-			    robotBaseStamp=mocapmsg.header.seq;
 	
-			}
-			
-		}
-	}
-
-
-    //ROS_INFO("I heard: [%d] messages from mocap\n", mocapCounter);
-}
 
 
 
 int main(int argc, char **argv)
 
 {	
-	int temp =0;
-	int count =0;
-	double dt = 0.01;
-	float speed = 0;
-	float quat_mag = 1.0;
-	float slerp_t = 0.5;
-	float vel_scale =0.3;
-	float distance = 0.0;
-	float initial_distance = 0.0;
-	double input[0];
 
-	GMRDynamics *master_arm = new GMRDynamics("data/masterGMM_posv2.txt");
-	master_arm->printInfo();
-
-	GMRDynamics *slave_hand = new GMRDynamics("data/slaveGMM_orientv2.txt");
-	slave_hand->printInfo();
-
-	GMRDynamics *slave_fingers = new GMRDynamics("data/slaveGMM_fingersv2.txt");
-	CDDynamics *finger_dynamics = new CDDynamics(1, dt, 100);
-
-	GMR *coupling_hand = new GMR("data/cplGMM_pos_orientv2.txt");
-
-	GMR *coupling_fingers = new GMR("data/cplGMM_pos_fingerv2.txt");
 
 	
-
-
 
 //--------------INITIALIZE COUPLING_HAND GMR ----------------------
 /*
@@ -409,28 +287,27 @@ int main(int argc, char **argv)
 	for(unsigned int i=0;i<out_dim2.size();i++)
 		out_dim2[i] = i + in_dim2.size();
 
-	// setup CDS GMR
+	coupling_fingers_lateral = new GMR("data/cplGMM_pos_finger_lateral.txt");
+	coupling_fingers_simple = new GMR("data/cplGMM_pos_finger_simple.txt");
+
+
+//	coupling_fingers->printInfo();
+
+	cout<<"\nDefault Grasp type (1 simple, 2 pinch, 3 lateral):";
+	cin>>default_grasp_type;
+
+	//loading default grasp type coupling file
+	if(default_grasp_type == 3)
+		coupling_fingers = coupling_fingers_lateral;
+	else
+		coupling_fingers = coupling_fingers_simple;
+
 	coupling_fingers->initGMR(in_dim2,out_dim2);
-
-	coupling_fingers->printInfo();
-
 
 
 //----------------USER INPUT ----------------------------------------
 
-	Vector  mcurrentpos, mdesired_pos, mrelvel, mrelpos;
-	double mrel_vel[3], mrel_pos[3], mcurrent_pos[3];
-	double starget_quaternion[4], scurrent_quaternion[4], sdesired_quaternion[4], srel_quaternion[4];
-	Eigen::Vector4f slerp_quaternion;
-	Eigen::Vector3f target;
-	double Psix[2];
-	REALTYPE target_orien[9], target_pos[3];
-	float JOINT_LIMIT = 0.2;
-
-
-	double fingers_current[DOF_HAND], fingers_desired[DOF_HAND], fingers_relpos[DOF_HAND];
-	double fingers_relvel[DOF_HAND], fingers_nextpos[DOF_HAND];
-	Vector finger_temp(1);
+//	double mrel_vel[3], mrel_pos[3], mcurrent_pos[3];
 	
 //	std::cout<<"\n Enter target translation:(vector 3)"<<endl;
 //	for(int i=0; i<3; i++)
@@ -450,9 +327,7 @@ int main(int argc, char **argv)
 
 //-----------------ROS TOPICS HANDLERS---------------------------------------
 	
-    geometry_msgs::Pose _msgRealPose, _msgDesiredPose;
-    geometry_msgs::Quaternion _msgDesiredOrientation;
-    geometry_msgs::Twist _msgDesiredTwist;
+//    std_msgs::Float64MultiArray _desiredJoints;
 
 	ros::init(argc, argv, "robocds");
 
@@ -464,63 +339,104 @@ int main(int argc, char **argv)
 	
 	ros::NodeHandle n1;
 
-	ros::Publisher desiredtwist = n1.advertise<geometry_msgs::Twist>("/lwr/joint_controllers/passive_ds_command_vel", 1000);
- 	ros::Publisher desiredOrientation = n1.advertise<geometry_msgs::Quaternion>("/lwr/joint_controllers/passive_ds_command_orient", 100);
- 	ros::Publisher jointcmd_pub = n1.advertise<sensor_msgs::JointState>("/allegroHand_0/joint_cmd", 1000);
+//  For KUKA LWR
+	ros::Publisher desiredtwist = n1.advertise<geometry_msgs::Twist>("/lwr/joint_controllers/passive_ds_command_vel", 400);
+// 	ros::Publisher desiredOrientation = n1.advertise<geometry_msgs::Quaternion>("/lwr/joint_controllers/passive_ds_command_orient", 400);
+
+//	For KUKA IIWA
+	ros::Publisher _pubDesiredPose =n1.advertise<geometry_msgs::Pose>("IIWA/Desired_E_Pos", 10);
 
 
+//	For Allegro Hand without robot haptic controller
+// 	ros::Publisher jointcmd_pub = n1.advertise<sensor_msgs::JointState>("/allegroHand_0/joint_cmd", 400);
+
+//	For allegro hand with robot haptic controller
+ 	ros::Publisher jointcmd_pub = n1.advertise<sensor_msgs::JointState>("/desired_hand_state", 400);
+
+
+
+// 	ros::Publisher _pubDesiredJoints = n1.advertise<std_msgs::Float64MultiArray>("lwr/joint_controllers/command_joint_pos", 10);
+
+
+// 	For KUKA LWR 
 //	ros::Subscriber subRealTwist = n1.subscribe("/lwr/ee_vel", 1, updateRealTwist);
-	ros::Subscriber subRealPose = n1.subscribe("/lwr/ee_pose", 1, updateRealPose);
-	ros::Subscriber jointstates_sub=n1.subscribe("allegroHand_0/joint_states", 1000, updateJointStates);
-
-    ros::Subscriber objectSub=n1.subscribe("/object/pose", 10, objectListener);
-
-	ros::Subscriber robotBaseSub=n1.subscribe("/Robot/pose", 10, robotBaseListener);
+//	ros::Subscriber subRealPose = n1.subscribe("/lwr/ee_pose", 100, updateRealPose);
+	ros::Subscriber jointstates_sub=n1.subscribe("allegroHand_1/joint_states", 100, updateJointStates);
 
 
-	ros:: Rate loop_rate(10);
+//	If using mocap optitrack
+//  ros::Subscriber objectSub=n1.subscribe("/object/pose", 100, objectListener);
+//	ros::Subscriber robotBaseSub=n1.subscribe("/Robot/pose", 100, robotBaseListener);
 
-	while(!firstrosread)
+
+//	If using gaze tracking
+	ros::Subscriber targetSub=n1.subscribe("target", 10, targetListener);
+
+//	Subscriber and Publisher for IIWA robot
+	ros::Subscriber robotSub=n1.subscribe("IIWA/Real_E_Pos", 10, robotListener);
+
+	ros::Subscriber graspSub = n1.subscribe("EMGinterfaceInt/grasp_type", 10, graspListener);
+
+    ros::Subscriber mocapSub=n1.subscribe("hand/pose", 10, handListener);
+
+    ros::Subscriber pressure_sub = n1.subscribe("/tactile_pressures", 10, pressureListener);
+
+
+//	ros::Subscriber graspSub = n1.subscribe("")
+
+	ros:: Rate loop_rate(200);
+
+/*
+	while(!_firstRealPoseReceived)
+	{
+			ros::spinOnce();
+			loop_rate.sleep();
+			ROS_INFO("Waiting for First Real Pose!");
+	}
+*/
+//--------------------ROS TOPICS HANDLERS END----------------------------------
+
+
+	ee_offset_transformed = Utils::quaternionToRotationMatrix(_q) * hand_link;
+
+	while(!_firstRealPoseReceived)
 	{
 			ros::spinOnce();
 			loop_rate.sleep();
 	}
 
-//--------------------ROS TOPICS HANDLERS END----------------------------------
+
+	mcurrent_pos = _x + ee_offset_transformed;
+//	mtarget_pos = object_position - robot_base_position;
+
+//if using mocap optitrack
+//	mtarget_pos[0] = object_position(0) - robot_base_position(0);
+//	mtarget_pos[1] = object_position(1) - robot_base_position(1);
+//	mtarget_pos[2] = object_position(2) - robot_base_position(2);
+
+//if using gaze tracking
 
 
-//	mcurrent_pos = E2M_v(_x);
-	ee_offset_transformed = Utils::quaternionToRotationMatrix(_q) * hand_link;
 
-	cout<<"\n Hand link Offset in EE frame: \n"<< hand_link<<endl;
-	cout<<"Hand link offset in world frame: \n"<< ee_offset_transformed<<endl;
-
-
-	mcurrent_pos[0] = _x[0] + ee_offset_transformed(0);	
-	mcurrent_pos[1] = _x[1] + ee_offset_transformed(1);
-	mcurrent_pos[2] = _x[2] + ee_offset_transformed(2);
-
-	mtarget_pos[0] = object_position(0) - robot_base_position(0);
-	mtarget_pos[1] = object_position(1) - robot_base_position(1);
-	mtarget_pos[2] = object_position(2) - robot_base_position(2);
-
+	mtarget_pos[0] = _targetPosition(0);
+	mtarget_pos[1] = _targetPosition(1);
+	mtarget_pos[2] = _targetPosition(2);
 
 	std::cout<<"\nInitial_ee_pose Translation:"<<endl;
 	for(int i =0;i<3;i++)
 			cout<<mcurrent_pos[i]<< ", ";
 	for(int i=0;i<3;i++)
-		mrel_pos[i] = mcurrent_pos[i] - mtarget_pos[i];
+		mrel_pos[i] = mtarget_pos[i] - mcurrent_pos[i] ;
 
 	for(int i =0;i<3;i++)
 		{
 //			cout<<mrel_pos[i]<< ", ";
-			initial_distance += mrel_pos[i]*mrel_pos[i];
+			initial_dist += mrel_pos[i]*mrel_pos[i];
 		}
-	initial_distance = sqrt(initial_distance);
+	initial_dist = sqrt(initial_dist);
 
 
 
-	cout<<"Success flag";
 
 	desired_joint_state.position.resize(DOF_JOINTS);
 	desired_joint_state.velocity.resize(DOF_JOINTS);
@@ -532,160 +448,160 @@ int main(int argc, char **argv)
 
 
 
-	// filter parameters
-	double wn_filter_position, wn_filter_velocity, wn_filter_c, sample_time;
-    wn_filter_position = 10.0;
-    wn_filter_velocity = 200.0;//30
-	wn_filter_c = 25.0;
-	dim =3;
-	// robot-base's position filter
-	robot_base_pos_filter= new  CDDynamics(dim, sample_time, wn_filter_position);
-
-	robot_base_pos_filter->SetStateTarget(E2M_v(robot_base_position), E2M_v(robot_base_position));
-
-	// object's position filter
-	object_position_filter= new  CDDynamics(dim, sample_time, wn_filter_position);
-
-	object_position_filter->SetStateTarget(E2M_v(object_position), E2M_v(object_position));
-
-	// object's orientation filter
-	object_orientation_filter= new  CDDynamics(4, sample_time, wn_filter_position);
-
-	object_orientation_filter->SetStateTarget(E2M_v(object_orientation), E2M_v(object_orientation));
-
-	initOK=true;
-
 	ROS_INFO("Initialization complete\n");
 
-	cout<<"Ready?(enter any float):";
+	cout<<"Slerp_quaternion rescale factor (<1):";
 	cin>> input[0];
+
+	//Wait for the motion onset
+
+	while(task_state == 0)
+	{
+
+
+			ROS_INFO("Task state: [%i]", task_state);
+			updateTaskState();
+			ros::spinOnce();
+			loop_rate.sleep();
+	}
+
+
 
 	while(ros::ok())
 	{
 
-//		mcurrent_pos = E2M_v(_x);
-
-//------------ Transforming offset values from world frame to EE frame
-
-
-//	cout<<"Transfromation matrix: \n"<< Utils::quaternionToRotationMatrix(_q).transpose();
-
+		gohome = false;
 	ee_offset_transformed = Utils::quaternionToRotationMatrix(_q) * hand_link;
 
-	std::cerr << Utils::quaternionToRotationMatrix(_q) << std::endl;
+//	cout<<"\n Hand link Offset in EE frame: \n"<< hand_link<<endl;
+//	cout<<"Hand link offset in world frame: \n"<< ee_offset_transformed<<endl;
 
-	cout<<"\n Hand link Offset in EE frame: \n"<< hand_link<<endl;
-	cout<<"Hand link offset in world frame: \n"<< ee_offset_transformed<<endl;
 
-	mcurrent_pos[0] = _x[0] + ee_offset_transformed(0);	
+	mcurrent_pos[0] = _x[0]+ ee_offset_transformed(0);	
 	mcurrent_pos[1] = _x[1] + ee_offset_transformed(1);
 	mcurrent_pos[2] = _x[2] + ee_offset_transformed(2);
 
-	mtarget_pos[0] = object_position(0) - robot_base_position(0);
-	mtarget_pos[1] = object_position(1) - robot_base_position(1);
-	mtarget_pos[2] = object_position(2) - robot_base_position(2);
+//if using mocap optitrack
+//	mtarget_pos[0] = object_position(0) - robot_base_position(0) ;
+//	mtarget_pos[1] = object_position(1) - robot_base_position(1) ;
+//	mtarget_pos[2] = object_position(2) - robot_base_position(2) ;
 
+//if using gaze tracking
+
+	mtarget_pos[0] = _targetPosition(0);
+	mtarget_pos[1] = _targetPosition(1);
+	mtarget_pos[2] = _targetPosition(2);
+
+
+
+	for(int i=0;i<3;i++)
+		mrel_pos[i] = mtarget_pos[i] - mcurrent_pos[i] ;
+	dist = 0.0;
+		for(int i =0;i<3;i++)
+		{
+//			cout<<mrel_pos[i]<< ", ";
+			dist += mrel_pos[i]*mrel_pos[i];
+		}
+	dist = sqrt(dist);
+	std::cout<<"\ndist from the target:"<<dist<<endl;
+	// std::cout<<"\nInitial dist: "<<initial_dist;
+
+
+
+/*
 	mtarget_orient[0] = object_orientation(0);
 	mtarget_orient[1] = object_orientation(1);
 	mtarget_orient[2] = object_orientation(2);
 	mtarget_orient[3] = object_orientation(3);
+*/
+
+//------------------ Constructing target orientation from mrel_pos and object orientation
+
+// if using mocap optitrack
+	object_orientation4f << object_orientation(0), object_orientation(1), object_orientation(2), object_orientation(3);
 
 
-	for(int i=0;i<3;i++)
-		mrel_pos[i] = mcurrent_pos[i] - mtarget_pos[i] ;
-	distance = 0.0;
-		for(int i =0;i<3;i++)
-		{
-//			cout<<mrel_pos[i]<< ", ";
-			distance += mrel_pos[i]*mrel_pos[i];
-		}
-	distance = sqrt(distance);
-	std::cout<<"\nDistance from the target:"<<distance<<endl;
-
-	if(distance > 1)
+	if(_graspTypeReceived)
 	{
+		cout<<"grasp_type ="<<grasp_type<<endl;
 
-		ROS_INFO("\n Target out of reach (>0.10)!!! Going home!");
-		mcurrent_pos[0] = _x[0] ;	
-		mcurrent_pos[1] = _x[1] ;
-		mcurrent_pos[2] = _x[2] ;
+		if(grasp_type == 3)
+			coupling_fingers = coupling_fingers_lateral;
+		else
+			coupling_fingers = coupling_fingers_simple;
 
-		mtarget_pos[0] = home_position[0] ;
-		mtarget_pos[1] = home_position[1] ;
-		mtarget_pos[2] = home_position[2] ;
-
-		mtarget_orient[0] = home_orient[0];
-		mtarget_orient[1] = home_orient[1];
-		mtarget_orient[2] = home_orient[2];
-		mtarget_orient[3] = home_orient[3];
-
-
-
-
-	for(int i=0;i<3;i++)
-		mrel_pos[i] = mcurrent_pos[i] - mtarget_pos[i] ;
-
+		coupling_fingers->initGMR(in_dim2,out_dim2);
 	}
 
 
-//	if(mrel_pos[0]*mrel_pos[0]+ mrel_pos[1]*mrel_pos[1]+mrel_pos[2]*mrel_pos[2] < 0.005)
-//	{
-//		cout<<"\nTarget reached";
-//		_msgDesiredTwist.linear.x  = 0;
-//		_msgDesiredTwist.linear.y  = 0;
-//		_msgDesiredTwist.linear.z  = 0;
-//	}
-//	else
-//	{
 
-		master_arm->getGMROutput(mrel_pos, mrel_vel);
-
-		
-
-
-			speed = sqrt(mrel_vel[0]*mrel_vel[0] + mrel_vel[1]*mrel_vel[1] + mrel_vel[2]*mrel_vel[2]) ;
-		
-		if(speed>vel_scale)
+	if(task_state!= 0) 
+		{
+			if(task_state<3)
 			{
-				vel_scale = speed;
-				cout<<"\n!!!!High speed:"<<speed;
+				if(target_changed)
+				{
+					islifted = false;
+					grasp_ready = false;
+					lift();
+					openFingers();
+					if(islifted)
+					{
+						target_changed = false;
+						grasp_ready = false;
+					}
+
+				}
+				else if(!grasp_ready)
+				{
+					reachTarget();
+					moveFingers();
+					if(dist < 0.1)
+						grasp_ready = true;
+					else if (dist > 0.12)
+						grasp_ready = false;
+
+				}		
+				else 
+				{
+					tighten();
+					nomotion();
+				}
+
+
+				// if(grasp_ready && (!_graspfinished)) // if ready to grasp but not grasped yet
+				
 			}
+	
 
-			mrel_vel[0] = 0.3*mrel_vel[0]/vel_scale;
-			mrel_vel[1] = 0.3*mrel_vel[1]/vel_scale;
-			mrel_vel[2] = 0.3*mrel_vel[2]/vel_scale;
+			// if(task_state == 2)
 
-		speed = sqrt(mrel_vel[0]*mrel_vel[0] + mrel_vel[1]*mrel_vel[1] + mrel_vel[2]*mrel_vel[2]) ;
+			if(task_state == 3)
+				lift();
 
-		if((speed<0.1) && (distance>0.1))
-		{
-			mrel_vel[0] = 0.2*mrel_vel[0]/speed;
-			mrel_vel[1] = 0.2*mrel_vel[1]/speed;
-			mrel_vel[2] = 0.2*mrel_vel[2]/speed;
 
-			cout<<"\n !!!!Low speed:"<<speed;
-		}
 
-		if(distance < 0.05)
-		{
-			ROS_INFO("Target reached (<0.05)!");
-			mrel_vel[0] = 0;
-			mrel_vel[1] = 0;
-			mrel_vel[2] = 0;
-		}
 
-		std::cout<<"\nDesired velocity:"<<endl;
-		for(int i =0;i<3;i++)
-//			cout<<curr_ee_pose.GetTranslation()[i]<< ", ";
-		cout<<mrel_vel[i]<< ", ";
-		cout<<"Speed: "<<speed<<endl;
+	getnextpos();
 
-		_msgDesiredTwist.linear.x  = mrel_vel[0];
-		_msgDesiredTwist.linear.y  = mrel_vel[1];
-		_msgDesiredTwist.linear.z  = mrel_vel[2];
-		_msgDesiredTwist.angular.x = 0;
-		_msgDesiredTwist.angular.y = 0;
-		_msgDesiredTwist.angular.z = 0;
+
+	_pubDesiredPose.publish(_msgDesiredPose);
+	jointcmd_pub.publish(desired_joint_state);
+	desiredtwist.publish(_msgDesiredTwist);
+
+}
+
+
+
+
+	updateTaskState();
+	// task_state = 3;
+	ros::spinOnce();
+	loop_rate.sleep();
+
+
+
+	}
 
 
 		
@@ -706,105 +622,228 @@ int main(int argc, char **argv)
 //		for(int i =0;i<4;i++)
 //			cout<<des_ee_quaternion[i]<<", ";	
 
-/*	quat_mag = sqrt(sdesired_quaternion[0]*sdesired_quaternion[0] + 
-		sdesired_quaternion[1]*sdesired_quaternion[1] + 
-		sdesired_quaternion[2] * sdesired_quaternion[2] + 
-		sdesired_quaternion[3] * sdesired_quaternion[3]);
+/*
+	_msgDesiredPose.orientation.w= _q[0];
+	_msgDesiredPose.orientation.x= _q[1];
+	_msgDesiredPose.orientation.y= _q[2];
+	_msgDesiredPose.orientation.z= _q[3];
 */
-
-/*	slerp_quaternion[0] = sdesired_quaternion[0]/quat_mag;
-	slerp_quaternion[1] = sdesired_quaternion[1]/quat_mag;
-	slerp_quaternion[2] = sdesired_quaternion[2]/quat_mag;
-	slerp_quaternion[3] = sdesired_quaternion[3]/quat_mag;
-*/
-
-	quat_mag = sqrt(mtarget_orient[0]*mtarget_orient[0] + 
-		mtarget_orient[1]*mtarget_orient[1] + 
-		mtarget_orient[2] * mtarget_orient[2] + 
-		mtarget_orient[3] * mtarget_orient[3]);
-
-	slerp_quaternion[0] = mtarget_orient[0]/quat_mag;
-	slerp_quaternion[1] = mtarget_orient[1]/quat_mag;
-	slerp_quaternion[2] = mtarget_orient[2]/quat_mag;
-	slerp_quaternion[3] = mtarget_orient[3]/quat_mag;
-
-	slerp_quaternion = Utils::slerpQuaternion(_q, slerp_quaternion, (1- distance/initial_distance));
-
-	std::cout<<"\nCurrent Quaternion:"<<endl;
-	for(int i =0;i<4;i++)
-		cout<<_q[i]<< ", ";
-//
-
-	std::cout<<"\nDesired Quaternion:"<<endl;
-	for(int i =0;i<4;i++)
-		cout<<slerp_quaternion[i]<< ", ";
-
-
-	_msgDesiredOrientation.w = slerp_quaternion[0];
-	_msgDesiredOrientation.x = slerp_quaternion[1];
-	_msgDesiredOrientation.y = slerp_quaternion[2];
-	_msgDesiredOrientation.z = slerp_quaternion[3];
-
-
 //--------------------------FINGERS POSITION UPDATE-----------------
 
 
 
 
+//for KUKA IIWA
+
+// For KUKA LWR
+
+//		desiredOrientation.publish(_msgDesiredOrientation);
+
+
+
+
+
+}
+	
+
+
+
+
+
+void updateTaskState()
+{
+
+
+	cout<< "Task state: "<< task_state << endl;
+	if(counter>5)
+    	if(check_velocity(velocityNormHistory.back(),velThreshold))
+        	 task_state = 1;
+
+    if(_graspTypeReceived)
+         task_state = 2;
+    // if(_graspfinished)
+    //      task_state = 3;
+     counter++;
+}
+
+
+
+void reachTarget()
+{
+
+	ROS_INFO("Reaching target!");
+
+	
+// if using gaze tracking
+
+//	object_orientation4f << _targetOrientation(0), _targetOrientation(1), _targetOrientation(2), _targetOrientation(3);
+
+	if(dist > 0.1)			//stop changing desired orientation when near the object
+	{
+			if(grasp_type == 3)			//lateral grasp
+			{
+				mtarget_zaxis = - Utils::quaternionToRotationMatrix(object_orientation4f).col(0);		//hand pointed along x-axis of object
+				dist_xy = sqrt(mrel_pos[0]*mrel_pos[0] + (mrel_pos[1] -offset_orient_y)*(mrel_pos[1] -offset_orient_y));	//z-axis ofEE in xy plane
+																													//pointing slightly away from object
+
+				mtarget_xaxis << mrel_pos[0]/dist_xy, (mrel_pos[1] -offset_orient_y)/dist_xy, 0;
+//			mtarget_zaxis = mtarget_zaxis - mtarget_zaxis.dot(mtarget_xaxis) * mtarget_xaxis;
+//			mtarget_zaxis = mtarget_zaxis/mtarget_zaxis.norm();
+
+				mtarget_xaxis = mtarget_xaxis - mtarget_xaxis.dot(mtarget_zaxis) * mtarget_zaxis;
+				mtarget_xaxis = mtarget_xaxis/mtarget_xaxis.norm();
+				mtarget_yaxis = mtarget_zaxis.cross(mtarget_xaxis);
+
+
+			}
+			else
+			{
+									//simple grasp
+				mtarget_xaxis = - Utils::quaternionToRotationMatrix(object_orientation4f).col(2);		//hand along z-axis of object
+
+				dist_xy = sqrt(mrel_pos[0]*mrel_pos[0] + (mrel_pos[1] -offset_orient_y)*(mrel_pos[1] -offset_orient_y));	//z-axis ofEE in xy plane
+																													//pointing slightly away from object
+
+				mtarget_zaxis << mrel_pos[0]/dist_xy, (mrel_pos[1] -offset_orient_y)/dist_xy, 0;
+//			mtarget_zaxis = mtarget_zaxis - mtarget_zaxis.dot(mtarget_xaxis) * mtarget_xaxis;
+//			mtarget_zaxis = mtarget_zaxis/mtarget_zaxis.norm();
+
+				mtarget_zaxis = mtarget_zaxis - mtarget_zaxis.dot(mtarget_xaxis) * mtarget_xaxis;
+				mtarget_zaxis = mtarget_zaxis/mtarget_zaxis.norm();
+				mtarget_yaxis = mtarget_zaxis.cross(mtarget_xaxis);
+
+			}
+
+
+	}
+
+
+
+	// mtarget_rotation.col(0)<< -mtarget_zaxis;		//EE_x = Allegro_x
+	// mtarget_rotation.col(1)<< -mtarget_xaxis;		//EE_y = Allegro_x
+	// mtarget_rotation.col(2)<<  mtarget_yaxis;		//EE_z = -Allegro_y
+
+	mtarget_rotation.col(0)<< -mtarget_zaxis;		//EE_x = -Allegro_z
+	mtarget_rotation.col(1)<< -mtarget_xaxis;		//EE_y = -Allegro_x
+	mtarget_rotation.col(2)<<  mtarget_yaxis;		//EE_z =  Allegro_y
+
+//	EEtoAllegro<<0,1,0,					//rotation transform from ee to allegro palm
+//				 -1,0,0,
+//				 0,0,1;
+
+	// cout<<"\n object rotation : \n"<< Utils::quaternionToRotationMatrix(object_orientation4f);
+
+	// cout<<"\n target rotation : \n"<< mtarget_rotation;
+
+
+	// cout<<"\n End effector rotation: \n"<<  Utils::quaternionToRotationMatrix(_q);
+//	cout<<"\n relative position "<<mrel_pos[0]/dist<<", "<<mrel_pos[1]/dist<<", "<< mrel_pos[2]/dist;
+
+
+
+	mtarget_orient =  Utils::rotationMatrixToQuaternion( mtarget_rotation);
+
+
+
+//--------------------- OUT OF RANGE ---------------------------------------------
+	if(mtarget_pos[0]*mtarget_pos[0] + mtarget_pos[1]*mtarget_pos[1]  + mtarget_pos[2]*mtarget_pos[2] > 1.2)
+	{
+
+		gohome = true;
+		reach_home();
+	}
+
+
+
+//	if(mrel_pos[0]*mrel_pos[0]+ mrel_pos[1]*mrel_pos[1]+mrel_pos[2]*mrel_pos[2] < 0.005)
+//	{
+//		cout<<"\nTarget reached";
+//		_msgDesiredTwist.linear.x  = 0;
+//		_msgDesiredTwist.linear.y  = 0;
+//		_msgDesiredTwist.linear.z  = 0;
+//	}
+//	else
+//	{
+
+}
+
+
+	void moveFingers()
+{
+		ROS_INFO("Moving fingers!");
+
 		fingers_current[0] = current_joint_state.position[12];		//thumb 0
-		fingers_current[1] = current_joint_state.position[15];		//thumb 3
-		fingers_current[3] = current_joint_state.position[2];		//finger 1.2
-		fingers_current[4] = current_joint_state.position[1];		//finger 1.1
-		fingers_current[5] = current_joint_state.position[3];		//finger 1.3
+		fingers_current[1] = current_joint_state.position[13];		//thumb 1
+		fingers_current[2] = current_joint_state.position[2];		//finger 1.2
+		fingers_current[3] = current_joint_state.position[3];		//finger 1.1
+		fingers_current[4] = current_joint_state.position[1];		//finger 1.3
 
 //		for(int i =0;i<3;i++)
 //			mrel_pos[i] = alpha*mrel_pos[i];
-		CouplingFunction(mrel_pos, Psix);
-		Psix[0] = alpha*distance;
+
+
+
+//		CouplingFunction(mrel_pos, Psix);
+		Psix[0] = alpha*dist + coupling_offset;
 		coupling_fingers->getGMROutput(Psix, fingers_desired);
 
 //		cout<<"GMR Input: ";
 //		cin>>input[0];
 //		coupling_fingers->getGMROutput(input, fingers_desired);
 
-//		cout<<"\n Finger desired  position: ";
-//		for(int i=0; i<DOF_HAND;i++)
-//			cout<<fingers_desired[i]<<",";
+		// cout<<"\n Finger desired  position: ";
+		// for(int i=0; i<DOF_HAND;i++)
+		// 	cout<<fingers_desired[i]<<",";
 
 
-		finger_temp(0) = fingers_desired[0];
-		finger_dynamics->SetTarget(finger_temp);
-		finger_dynamics->Update();
-		finger_dynamics->GetState(finger_temp);
+//		finger_temp(0) = fingers_desired[0];
+//		finger_dynamics->SetTarget(finger_temp);
+//		finger_dynamics->Update();
+//		finger_dynamics->GetState(finger_temp);
 
 
 //		for(int i=0; i<DOF_HAND;i++)
 //			fingers_relpos[i] = fingers_desired[i] - fingers_current[i]; 	
 //		slave_fingers->getGMROutput(fingers_relpos, fingers_relvel);
 
-		rescale_finger(fingers_desired, fingers_nextpos);	//fingers next_pos = fingers desired
-
+//		rescale_finger(fingers_desired, fingers_nextpos);	//fingers next_pos = fingers desired
+		for(int i = 0; i<DOF_HAND;i++)
+			fingers_nextpos[i] = fingers_desired[i];
 		desired_joint_state.position[0] = 0 ;
 		desired_joint_state.position[1] =  beta*fingers_nextpos[4] ;
-		desired_joint_state.position[2] =  beta*fingers_nextpos[4] ;
-		desired_joint_state.position[3] =  beta*fingers_nextpos[4] ;
+		desired_joint_state.position[2] =  beta*fingers_nextpos[2] ;
+		desired_joint_state.position[3] =  beta*fingers_nextpos[3] ;
 		desired_joint_state.position[4] = 0;
 		desired_joint_state.position[5] = beta*fingers_nextpos[4];
-		desired_joint_state.position[6] = beta*fingers_nextpos[4];
-		desired_joint_state.position[7] =  beta*fingers_nextpos[4];
+		desired_joint_state.position[6] = beta*fingers_nextpos[2];
+		desired_joint_state.position[7] =  beta*fingers_nextpos[3];
 		desired_joint_state.position[8] = 0;
 		desired_joint_state.position[9] =  beta*fingers_nextpos[4];
-		desired_joint_state.position[10] =  beta*fingers_nextpos[4];
-		desired_joint_state.position[11] =  beta*fingers_nextpos[4];
-		desired_joint_state.position[12] =  beta*fingers_nextpos[4]*1.5;
-		desired_joint_state.position[13] =  beta*fingers_nextpos[4];
-		desired_joint_state.position[14] =  beta*fingers_nextpos[4];
-		desired_joint_state.position[15] =  beta*fingers_nextpos[4];
+		desired_joint_state.position[10] =  beta*fingers_nextpos[2];
+		desired_joint_state.position[11] =  beta*fingers_nextpos[3];
+		desired_joint_state.position[12] =  1.4;	//beta*fingers_nextpos[0];
+		desired_joint_state.position[13] =  beta*fingers_nextpos[1] - 0.2;
+		desired_joint_state.position[14] =  beta*fingers_nextpos[2] - 0.5;
+		desired_joint_state.position[15] =  beta*fingers_nextpos[3] - 0.2;
+
+		if(grasp_type == 2)			//Pinch grasp
+{
+		desired_joint_state.position[4] = 0;
+		desired_joint_state.position[5] = 0;
+		desired_joint_state.position[6] = 0;
+		desired_joint_state.position[7] =  0;
+		desired_joint_state.position[8] = 0;
+		desired_joint_state.position[9] =  0;
+		desired_joint_state.position[10] =  0;
+		desired_joint_state.position[11] =  0;
+
+}
+
 
 
 /*		for(int i=12; i< DOF_JOINTS; i++)
 			{
-				desired_joint_state.position[i] = (1 - distance/initial_distance)*(1 - distance/initial_distance)*grasp_pose[i];
+				desired_joint_state.position[i] = (1 - dist/initial_dist)*(1 - dist/initial_dist)*grasp_pose[i];
 			}
 */
 
@@ -817,22 +856,16 @@ int main(int argc, char **argv)
 //		desired_joint_state.position[15] = beta*fingers_nextpos[0]+ grasp_pose[15];
 
 
-		desiredtwist.publish(_msgDesiredTwist);
-		desiredOrientation.publish(_msgDesiredOrientation);
-
-
-
-
-if(distance>1)
+if(gohome==true)
 {		
 		ROS_INFO("Object out of range!!!! Going to home position!");
-		finger_temp(0) = 0;
-		finger_dynamics->SetTarget(finger_temp);
-		finger_dynamics->Update();
-		finger_dynamics->GetState(finger_temp);
+//		finger_temp(0) = 0;
+//		finger_dynamics->SetTarget(finger_temp);
+//		finger_dynamics->Update();
+//		finger_dynamics->GetState(finger_temp);
 
 		for(int i=0; i< DOF_JOINTS; i++)
-			desired_joint_state.position[i] = finger_temp(0);
+			desired_joint_state.position[i] = 0;
 //			if(abs(finger_temp(0)-0)<0.01)
 //				desired_joint_state.position[i] = finger_temp(0);
 //			else
@@ -849,14 +882,13 @@ if(distance>1)
 //		for(int i=0; i<DOF_HAND;i++)
 //			cout<<beta*fingers_nextpos[i]*180/3.14<<",";
 
-		cout<<"\n EE Current Position: "<< mcurrent_pos[0]<<", "<< mcurrent_pos[1]<<", "<< mcurrent_pos[2] << endl;
+		// cout<<"\n EE Current Position: "<< mcurrent_pos[0]<<", "<< mcurrent_pos[1]<<", "<< mcurrent_pos[2] << endl;
 
-		cout<<"Target: ";
-		for(int i=0;i<3;i++)
-			cout<<", "<< mtarget_pos[i];
+		// cout<<"Target: ";
+		// for(int i=0;i<3;i++)
+		// 	cout<<", "<< mtarget_pos[i];
 	
 
-		cout<<"\n Object Position: "<< object_position(0)<<", "<< object_position(1)<<", "<<object_position(2)<<endl;	
 
 
 /*	for(int i=0;i<DOF_JOINTS;i++)
@@ -867,18 +899,271 @@ if(distance>1)
 				desired_joint_state.position[i] =  current_joint_state.position[i] - JOINT_LIMIT ;
 	}
 */
-		jointcmd_pub.publish(desired_joint_state);
 
 
-
-
-		ros::spinOnce();
-		loop_rate.sleep();
-
-
-	}
-	
 
 }
 
+void lift()				//move the arm in the direction of hand marker leaving the orientation unchanged
+{
+	ROS_INFO("Lifting hand up!");
+	for(int i=0; i<2;i++)
+		{
+			mrel_pos[i] = lifted_position[i] - mcurrent_pos[i] ;
+		}
+
+
+
+if(!first_orientation_set)
+	{
+
+		_msgDesiredPose.orientation.w= _q[0];
+		_msgDesiredPose.orientation.x= _q[1];
+		_msgDesiredPose.orientation.y= _q[2];
+		_msgDesiredPose.orientation.z=  _q[3];
+		first_orientation_set = true;
+	}
+	if(sqrt(mrel_pos[0]*mrel_pos[0] + mrel_pos[1]*mrel_pos[1] + mrel_pos[2]*mrel_pos[2]) < 0.1)
+		islifted = true;
+
+
+}
+
+void tighten()
+{	
+	ROS_INFO("Tightening grip! ");
+	
+	for(int i=0;i<12;i++)
+		if(task_state != 3 && desired_joint_state.position[i]<2.5)
+			desired_joint_state.position[i] += 0.01;
+
+			desired_joint_state.position[0] = 0;
+			desired_joint_state.position[4] = 0;
+			desired_joint_state.position[8] = 0;
+
+
+				if(dist> 0.3)			
+				{
+					target_changed_counter++;
+					if(target_changed_counter>10)
+					{
+						target_changed = true;
+
+					}
+					ROS_INFO("Target changed! Going home!");
+				}
+
+
+
+			
+
+}
+
+
+void openFingers()
+{
+	ROS_INFO("Opening grip! ");
+	
+	for(int i=0;i<15;i++)
+			desired_joint_state.position[i] = 0.0;
+
+	
+}
+
+void reach_home()
+{
+	ROS_INFO("\n Going home!");
+		// grasp_ready = false;
+		// mcurrent_pos[0] = _x[0] ;	
+		// mcurrent_pos[1] = _x[1] ;
+		// mcurrent_pos[2] = _x[2] ;
+
+		// mtarget_pos[0] = home_position[0] ;
+		// mtarget_pos[1] = home_position[1] ;
+		// mtarget_pos[2] = home_position[2] ;
+
+		mtarget_orient[0] = home_orient[0];
+		mtarget_orient[1] = home_orient[1];
+		mtarget_orient[2] = home_orient[2];
+		mtarget_orient[3] = home_orient[3];
+
+
+	initial_dist  = 0; 
+
+	for(int i=0;i<3;i++)
+		{
+			mrel_pos[i] = home_position[i] - mcurrent_pos[i] ;
+			initial_dist += mrel_pos[i]*mrel_pos[i];
+		}
+
+	initial_dist = sqrt(initial_dist);
+	if (initial_dist < 0.2)
+		home_reached = true;
+	if(home_reached)
+	{
+		ROS_INFO("Reached home!");
+		grasp_ready = false;
+	}
+
+
+}
+
+void getnextpos()
+{
+			for(int k =0; k <3; k++)
+		{
+			temp1[k] = -mrel_pos[k];
+		}
+		master_arm->getGMROutput(temp1, temp2);
+
+		mrel_vel<< temp2[0], temp2[1], temp2[2];
+
+
+			speed = sqrt(mrel_vel[0]*mrel_vel[0] + mrel_vel[1]*mrel_vel[1] + mrel_vel[2]*mrel_vel[2]) ;
+		
+		if(speed>vel_scale)
+			{
+				vel_scale = speed;
+				cout<<"\n!!!!High speed:"<<speed;
+								mrel_vel[0] = max_speed*mrel_vel[0]/vel_scale;
+				mrel_vel[1] = max_speed*mrel_vel[1]/vel_scale;
+				mrel_vel[2] = max_speed*mrel_vel[2]/vel_scale;
+
+
+			}
+
+
+		speed = sqrt(mrel_vel[0]*mrel_vel[0] + mrel_vel[1]*mrel_vel[1] + mrel_vel[2]*mrel_vel[2]) ;
+
+		if((speed<0.25) && (dist>0.05) && gohome==false)
+		{
+			mrel_vel[0] = 0.3*mrel_vel[0]/speed;
+			mrel_vel[1] = 0.3*mrel_vel[1]/speed;
+			mrel_vel[2] = 0.3*mrel_vel[2]/speed;
+
+			cout<<"\n !!!!Low speed:"<<speed;
+		}
+
+
+		// if(dist > 0.04)
+		// 	target_reached = false;
+		// else if(dist < 0.03)
+		// {
+		// 	target_reached = true;
+		// 	ROS_INFO("Target reached (<0.05)!");
+		// 	_x_static = _x;			// record current end effector position, better approach to gravity compensation issue
+
+		// }
+
+		// if(target_reached)
+		// {
+		// 	mrel_vel[0] = 0;
+		// 	mrel_vel[1] = 0;
+		// 	mrel_vel[2] = 0;
+		// }
+
+		// if(speed<0.1)		// To prevent vibrations
+		// {
+		// 	mrel_vel[0] = 0;
+		// 	mrel_vel[1] = 0;
+		// 	mrel_vel[2] = 0;
+		// }
+
+
+		std::cout<<"\nDesired velocity:"<<endl;
+		for(int i =0;i<3;i++)
+//			cout<<curr_ee_pose.GetTranslation()[i]<< ", ";
+		cout<<mrel_vel[i]<< ", ";
+
+		speed = sqrt(mrel_vel[0]*mrel_vel[0] + mrel_vel[1]*mrel_vel[1] + mrel_vel[2]*mrel_vel[2]) ;
+
+		cout<<"Speed: "<<speed<<endl;
+
+//		for KUKA LWR
+		_msgDesiredTwist.linear.x  = mrel_vel[0];
+		_msgDesiredTwist.linear.y  = mrel_vel[1];
+		_msgDesiredTwist.linear.z  = mrel_vel[2];
+//		_msgDesiredTwist.angular.x = 0;
+//		_msgDesiredTwist.angular.y = 0;
+//		_msgDesiredTwist.angular.z = 0;
+
+
+/*	quat_mag = sqrt(sdesired_quaternion[0]*sdesired_quaternion[0] + 
+		sdesired_quaternion[1]*sdesired_quaternion[1] + 
+		sdesired_quaternion[2] * sdesired_quaternion[2] + 
+		sdesired_quaternion[3] * sdesired_quaternion[3]);
+*/
+
+/*	slerp_quaternion[0] = sdesired_quaternion[0]/quat_mag;
+	slerp_quaternion[1] = sdesired_quaternion[1]/quat_mag;
+	slerp_quaternion[2] = sdesired_quaternion[2]/quat_mag;
+	slerp_quaternion[3] = sdesired_quaternion[3]/quat_mag;
+*/
+
+/*	quat_mag = sqrt(mtarget_orient[0]*mtarget_orient[0] + 
+		mtarget_orient[1]*mtarget_orient[1] + 
+		mtarget_orient[2] * mtarget_orient[2] + 
+		mtarget_orient[3] * mtarget_orient[3]);
+
+	slerp_quaternion[0] = mtarget_orient[0]/quat_mag;
+	slerp_quaternion[1] = mtarget_orient[1]/quat_mag;
+	slerp_quaternion[2] = mtarget_orient[2]/quat_mag;
+	slerp_quaternion[3] = mtarget_orient[3]/quat_mag;
+*/
+//	slerp_quaternion = Utils::slerpQuaternion(_q, slerp_quaternion, input[0]*(1- input[0]*dist/initial_dist));
+	slerp_quaternion = Utils::slerpQuaternion(_q, mtarget_orient, input[0]);
+
+
+	// std::cout<<"\nCurrent Quaternion:"<<endl;
+	// for(int i =0;i<4;i++)
+	// 	cout<<_q[i]<< ", ";
+//
+
+	// std::cout<<"\nDesired Quaternion:"<<endl;
+	// for(int i =0;i<4;i++)
+	// 	cout<<slerp_quaternion[i]<< ", ";
+
+
+//	_msgDesiredOrientation.w = slerp_quaternion[0];
+//	_msgDesiredOrientation.x = slerp_quaternion[1];
+//	_msgDesiredOrientation.y = slerp_quaternion[2];
+//	_msgDesiredOrientation.z = slerp_quaternion[3];
+
+	_msgDesiredPose.orientation.w= slerp_quaternion[0];
+	_msgDesiredPose.orientation.x= slerp_quaternion[1];
+	_msgDesiredPose.orientation.y= slerp_quaternion[2];
+	_msgDesiredPose.orientation.z= slerp_quaternion[3];
+
+	// if(!grasp_ready)
+	// {
+
+	desiredNextPosition[0]=mrel_vel[0]*dt + _x[0];
+	desiredNextPosition[1]=mrel_vel[1]*dt + _x[1];
+	desiredNextPosition[2]=mrel_vel[2]*dt + _x[2];
+
+	// }
+	// else
+	// {
+
+	// desiredNextPosition[0]= _x[0];
+	// desiredNextPosition[1]= _x[1];
+	// desiredNextPosition[2]= _x[2];
+
+	// }	
+		cout<<"\n Desired Next Position: "<< desiredNextPosition(0)<<", "<< desiredNextPosition(1)<<", "<<desiredNextPosition(2)<<endl;	
+
+
+	_msgDesiredPose.position.x=desiredNextPosition[0];
+	_msgDesiredPose.position.y=desiredNextPosition[1];
+	_msgDesiredPose.position.z=desiredNextPosition[2];
+
+}
+
+void nomotion()
+{
+
+	mrel_pos[0] = 0;
+	mrel_pos[1] = 0;	
+	mrel_pos[2] = 0;
+}
 
